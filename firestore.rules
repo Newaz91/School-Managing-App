@@ -1,0 +1,326 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Reusable Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidSchoolCode(schoolId) {
+      return schoolId is string && schoolId.size() >= 2 && schoolId.size() <= 32 && schoolId.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // ─────────────────────────── SHARED SCHOOL WORKSPACE (NO-LOGIN BY UNIQUE SCHOOL ID) ───────────────────────────
+
+    function isValidSchoolWorkspace(d, schoolId) {
+      return d.schoolId is string && d.schoolId == schoolId &&
+             d.schoolName is string && d.schoolName.size() >= 1 && d.schoolName.size() <= 150 &&
+             (!('emisCode' in d) || (d.emisCode is string && d.emisCode.size() <= 30)) &&
+             (!('upazilaDistrict' in d) || (d.upazilaDistrict is string && d.upazilaDistrict.size() <= 100)) &&
+             d.defaultAcademicYear is int && d.defaultAcademicYear >= 2020 && d.defaultAcademicYear <= 2050 &&
+             d.adminDeviceId is string && d.adminDeviceId.size() >= 1 && d.adminDeviceId.size() <= 64 &&
+             d.adminName is string && d.adminName.size() >= 1 && d.adminName.size() <= 100 &&
+             (!('teachers' in d) || (d.teachers is list && d.teachers.size() <= 60)) &&
+             (!('examConfigs' in d) || (d.examConfigs is list && d.examConfigs.size() <= 5)) &&
+             (!('recentMessages' in d) || (d.recentMessages is list && d.recentMessages.size() <= 30)) &&
+             d.createdAt is timestamp && d.createdAt <= request.time &&
+             d.updatedAt is timestamp && d.updatedAt <= request.time;
+    }
+
+    function isValidSchoolStudent(d, schoolId) {
+      return d.schoolId is string && d.schoolId == schoolId &&
+             d.studentNameEn is string && d.studentNameEn.size() >= 1 && d.studentNameEn.size() <= 120 &&
+             (!('studentNameBn' in d) || (d.studentNameBn is string && d.studentNameBn.size() <= 120)) &&
+             (!('fatherNameEn' in d) || (d.fatherNameEn is string && d.fatherNameEn.size() <= 120)) &&
+             (!('motherNameEn' in d) || (d.motherNameEn is string && d.motherNameEn.size() <= 120)) &&
+             (!('dateOfBirth' in d) || (d.dateOfBirth is string && d.dateOfBirth.size() <= 30)) &&
+             (!('guardianPhone' in d) || (d.guardianPhone is string && d.guardianPhone.size() <= 30)) &&
+             (!('address' in d) || (d.address is string && d.address.size() <= 250)) &&
+             (!('photoBase64' in d) || (d.photoBase64 is string && d.photoBase64.size() <= 140000)) &&
+             d.rollNumber is string && d.rollNumber.size() >= 1 && d.rollNumber.size() <= 20 &&
+             d.classLevel is string && d.classLevel.size() >= 1 && d.classLevel.size() <= 40 &&
+             (!('section' in d) || (d.section is string && d.section.size() <= 30)) &&
+             d.academicYear is int && d.academicYear >= 2020 && d.academicYear <= 2050 &&
+             (!('totalSchoolDays' in d) || (d.totalSchoolDays is int && d.totalSchoolDays >= 0 && d.totalSchoolDays <= 366)) &&
+             (!('daysPresent' in d) || (d.daysPresent is int && d.daysPresent >= 0 && d.daysPresent <= 366)) &&
+             (!('promotionStatus' in d) || (d.promotionStatus is string && d.promotionStatus.size() <= 40)) &&
+             (!('customValues' in d) || (d.customValues is map && d.customValues.size() <= 100)) &&
+             (!('subjectValues' in d) || (d.subjectValues is map && d.subjectValues.size() <= 150)) &&
+             (!('examResults' in d) || (d.examResults is map && d.examResults.size() <= 150)) &&
+             (!('sectorNotes' in d) || (d.sectorNotes is map && d.sectorNotes.size() <= 150)) &&
+             (!('lastUpdatedByName' in d) || (d.lastUpdatedByName is string && d.lastUpdatedByName.size() <= 100)) &&
+             d.createdAt is timestamp && d.createdAt <= request.time &&
+             d.updatedAt is timestamp && d.updatedAt <= request.time;
+    }
+
+    function isValidSchoolSubject(d, schoolId) {
+      return d.schoolId is string && d.schoolId == schoolId &&
+             d.name is string && d.name.size() >= 1 && d.name.size() <= 80 &&
+             d.gradeScope is string && d.gradeScope.size() >= 1 && d.gradeScope.size() <= 50 &&
+             d.fields is list && d.fields.size() <= 30 &&
+             (d.fields.size() == 0 || d.fields[0] is map) &&
+             d.createdAt is timestamp && d.createdAt <= request.time &&
+             d.updatedAt is timestamp && d.updatedAt <= request.time;
+    }
+
+    function isValidSchoolCustomField(d, schoolId) {
+      return d.schoolId is string && d.schoolId == schoolId &&
+             d.category is string && d.category.size() >= 1 && d.category.size() <= 60 &&
+             d.label is string && d.label.size() >= 1 && d.label.size() <= 80 &&
+             d.fieldType in ['TEXT', 'NUMBER', 'YES_NO'] &&
+             d.resetsYearly is bool &&
+             d.createdAt is timestamp && d.createdAt <= request.time &&
+             d.updatedAt is timestamp && d.updatedAt <= request.time;
+    }
+
+    function isValidAttendanceLog(d, schoolId) {
+      return d.schoolId is string && d.schoolId == schoolId &&
+             d.academicYear is int && d.academicYear >= 2020 && d.academicYear <= 2050 &&
+             d.classLevel is string && d.classLevel.size() >= 1 && d.classLevel.size() <= 40 &&
+             d.dateKey is string && d.dateKey.size() == 10 &&
+             d.monthKey is string && d.monthKey.size() == 7 &&
+             d.statuses is map && d.statuses.size() <= 300 &&
+             (!('markedByName' in d) || (d.markedByName is string && d.markedByName.size() <= 100)) &&
+             d.createdAt is timestamp && d.createdAt <= request.time &&
+             d.updatedAt is timestamp && d.updatedAt <= request.time;
+    }
+
+    function isValidPendingChange(d, schoolId) {
+      return d.schoolId is string && d.schoolId == schoolId &&
+             d.entityType in [
+               'STUDENT_CREATE', 'STUDENT_UPDATE', 'STUDENT_DELETE', 'STUDENT_BATCH_UPDATE',
+               'SUBJECT_SAVE', 'SUBJECT_DELETE', 'CUSTOM_FIELD_SAVE', 'CUSTOM_FIELD_DELETE',
+               'ATTENDANCE_SAVE', 'EXAM_CONFIG_SAVE'
+             ] &&
+             (!('targetId' in d) || (d.targetId is string && d.targetId.size() <= 80)) &&
+             d.submittedByDeviceId is string && d.submittedByDeviceId.size() >= 1 && d.submittedByDeviceId.size() <= 64 &&
+             d.submittedByName is string && d.submittedByName.size() >= 1 && d.submittedByName.size() <= 100 &&
+             d.summary is string && d.summary.size() >= 1 && d.summary.size() <= 180 &&
+             (!('detailsText' in d) || (d.detailsText is string && d.detailsText.size() <= 800)) &&
+             d.payloadJson is string && d.payloadJson.size() >= 2 && d.payloadJson.size() <= 180000 &&
+             d.status in ['PENDING', 'APPROVED', 'REJECTED'] &&
+             (!('reviewedByName' in d) || (d.reviewedByName is string && d.reviewedByName.size() <= 100)) &&
+             d.createdAt is timestamp && d.createdAt <= request.time &&
+             d.updatedAt is timestamp && d.updatedAt <= request.time;
+    }
+
+    function isValidSchoolParentNotice(d, schoolId) {
+      return d.schoolId is string && d.schoolId == schoolId &&
+             d.audienceType in ['INDIVIDUAL', 'CLASS', 'ALL_SCHOOL'] &&
+             d.targetLabel is string && d.targetLabel.size() >= 1 && d.targetLabel.size() <= 120 &&
+             d.recipientCount is int && d.recipientCount >= 0 && d.recipientCount <= 1000 &&
+             d.channel in ['SMS', 'WHATSAPP', 'SHARE'] &&
+             (!('title' in d) || (d.title is string && d.title.size() <= 120)) &&
+             d.messageBody is string && d.messageBody.size() >= 1 && d.messageBody.size() <= 1500 &&
+             (!('sentByName' in d) || (d.sentByName is string && d.sentByName.size() <= 100)) &&
+             d.createdAt is timestamp && d.createdAt <= request.time &&
+             d.updatedAt is timestamp && d.updatedAt <= request.time;
+    }
+
+    function isValidSchoolChatMessage(d, schoolId) {
+      return d.schoolId is string && d.schoolId == schoolId &&
+             d.roomId is string && d.roomId == schoolId &&
+             d.senderUid is string && d.senderUid.size() >= 1 && d.senderUid.size() <= 128 &&
+             d.senderName is string && d.senderName.size() >= 1 && d.senderName.size() <= 100 &&
+             (!('tag' in d) || (d.tag is string && d.tag.size() <= 40)) &&
+             d.text is string && d.text.size() >= 1 && d.text.size() <= 1000 &&
+             d.editedFlag is bool &&
+             d.createdAt is timestamp && d.createdAt <= request.time &&
+             d.updatedAt is timestamp && d.updatedAt <= request.time;
+    }
+
+    match /schools/{schoolId} {
+      // Teachers must enter the exact School ID; global listing of all schools is blocked
+      allow get: if isValidSchoolCode(schoolId);
+      allow list: if false;
+
+      allow create: if isValidSchoolCode(schoolId) &&
+                       request.resource.data.keys().hasAll(['schoolId', 'schoolName', 'defaultAcademicYear', 'adminDeviceId', 'adminName', 'createdAt', 'updatedAt']) &&
+                       request.resource.data.keys().hasOnly([
+                         'schoolId', 'schoolName', 'emisCode', 'upazilaDistrict',
+                         'defaultAcademicYear', 'adminDeviceId', 'adminName',
+                         'teachers', 'examConfigs', 'recentMessages',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidSchoolWorkspace(request.resource.data, schoolId);
+
+      allow update: if isValidSchoolCode(schoolId) &&
+                       request.resource.data.schoolId == resource.data.schoolId &&
+                       request.resource.data.createdAt == resource.data.createdAt &&
+                       isValidSchoolWorkspace(request.resource.data, schoolId) &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                         'schoolName', 'emisCode', 'upazilaDistrict', 'defaultAcademicYear',
+                         'adminDeviceId', 'adminName', 'teachers', 'examConfigs',
+                         'recentMessages', 'updatedAt'
+                       ]);
+
+      allow delete: if false;
+
+      match /students/{studentId} {
+        allow get, list: if isValidSchoolCode(schoolId);
+
+        allow create: if isValidSchoolCode(schoolId) && isValidId(studentId) &&
+                         request.resource.data.keys().hasAll(['schoolId', 'studentNameEn', 'rollNumber', 'classLevel', 'academicYear', 'createdAt', 'updatedAt']) &&
+                         request.resource.data.keys().hasOnly([
+                           'schoolId', 'createdAt', 'updatedAt',
+                           'studentNameEn', 'studentNameBn', 'fatherNameEn', 'motherNameEn',
+                           'dateOfBirth', 'guardianPhone', 'address', 'photoBase64',
+                           'rollNumber', 'classLevel', 'section', 'academicYear',
+                           'totalSchoolDays', 'daysPresent', 'promotionStatus',
+                           'customValues', 'subjectValues', 'examResults', 'sectorNotes', 'lastUpdatedByName'
+                         ]) &&
+                         isValidSchoolStudent(request.resource.data, schoolId);
+
+        allow update: if isValidSchoolCode(schoolId) && isValidId(studentId) &&
+                         request.resource.data.schoolId == resource.data.schoolId &&
+                         request.resource.data.createdAt == resource.data.createdAt &&
+                         isValidSchoolStudent(request.resource.data, schoolId) &&
+                         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                           'updatedAt',
+                           'studentNameEn', 'studentNameBn', 'fatherNameEn', 'motherNameEn',
+                           'dateOfBirth', 'guardianPhone', 'address', 'photoBase64',
+                           'rollNumber', 'classLevel', 'section', 'academicYear',
+                           'totalSchoolDays', 'daysPresent', 'promotionStatus',
+                           'customValues', 'subjectValues', 'examResults', 'sectorNotes', 'lastUpdatedByName'
+                         ]);
+
+        allow delete: if isValidSchoolCode(schoolId) && isValidId(studentId);
+      }
+
+      match /subjects/{subjectId} {
+        allow get, list: if isValidSchoolCode(schoolId);
+
+        allow create: if isValidSchoolCode(schoolId) && isValidId(subjectId) &&
+                         request.resource.data.keys().hasAll(['schoolId', 'name', 'gradeScope', 'fields', 'createdAt', 'updatedAt']) &&
+                         request.resource.data.keys().hasOnly(['schoolId', 'name', 'gradeScope', 'fields', 'createdAt', 'updatedAt']) &&
+                         isValidSchoolSubject(request.resource.data, schoolId);
+
+        allow update: if isValidSchoolCode(schoolId) && isValidId(subjectId) &&
+                         request.resource.data.schoolId == resource.data.schoolId &&
+                         request.resource.data.createdAt == resource.data.createdAt &&
+                         isValidSchoolSubject(request.resource.data, schoolId) &&
+                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'gradeScope', 'fields', 'updatedAt']);
+
+        allow delete: if isValidSchoolCode(schoolId) && isValidId(subjectId);
+      }
+
+      match /customFields/{fieldId} {
+        allow get, list: if isValidSchoolCode(schoolId);
+
+        allow create: if isValidSchoolCode(schoolId) && isValidId(fieldId) &&
+                         request.resource.data.keys().hasAll(['schoolId', 'category', 'label', 'fieldType', 'resetsYearly', 'createdAt', 'updatedAt']) &&
+                         request.resource.data.keys().hasOnly(['schoolId', 'category', 'label', 'fieldType', 'resetsYearly', 'createdAt', 'updatedAt']) &&
+                         isValidSchoolCustomField(request.resource.data, schoolId);
+
+        allow update: if isValidSchoolCode(schoolId) && isValidId(fieldId) &&
+                         request.resource.data.schoolId == resource.data.schoolId &&
+                         request.resource.data.createdAt == resource.data.createdAt &&
+                         isValidSchoolCustomField(request.resource.data, schoolId) &&
+                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['category', 'label', 'fieldType', 'resetsYearly', 'updatedAt']);
+
+        allow delete: if isValidSchoolCode(schoolId) && isValidId(fieldId);
+      }
+
+      match /attendanceLogs/{logId} {
+        allow get, list: if isValidSchoolCode(schoolId);
+
+        allow create: if isValidSchoolCode(schoolId) && isValidId(logId) &&
+                         request.resource.data.keys().hasAll(['schoolId', 'academicYear', 'classLevel', 'dateKey', 'monthKey', 'statuses', 'createdAt', 'updatedAt']) &&
+                         request.resource.data.keys().hasOnly(['schoolId', 'academicYear', 'classLevel', 'dateKey', 'monthKey', 'statuses', 'markedByName', 'createdAt', 'updatedAt']) &&
+                         isValidAttendanceLog(request.resource.data, schoolId);
+
+        allow update: if isValidSchoolCode(schoolId) && isValidId(logId) &&
+                         request.resource.data.schoolId == resource.data.schoolId &&
+                         request.resource.data.createdAt == resource.data.createdAt &&
+                         isValidAttendanceLog(request.resource.data, schoolId) &&
+                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['statuses', 'markedByName', 'updatedAt']);
+
+        allow delete: if isValidSchoolCode(schoolId) && isValidId(logId);
+      }
+
+      match /pendingChanges/{changeId} {
+        allow get, list: if isValidSchoolCode(schoolId);
+
+        allow create: if isValidSchoolCode(schoolId) && isValidId(changeId) &&
+                         request.resource.data.status == 'PENDING' &&
+                         request.resource.data.keys().hasAll(['schoolId', 'entityType', 'submittedByDeviceId', 'submittedByName', 'summary', 'payloadJson', 'status', 'createdAt', 'updatedAt']) &&
+                         request.resource.data.keys().hasOnly([
+                           'schoolId', 'entityType', 'targetId', 'submittedByDeviceId',
+                           'submittedByName', 'summary', 'detailsText', 'payloadJson',
+                           'status', 'reviewedByName', 'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidPendingChange(request.resource.data, schoolId);
+
+        allow update: if isValidSchoolCode(schoolId) && isValidId(changeId) &&
+                         request.resource.data.schoolId == resource.data.schoolId &&
+                         request.resource.data.createdAt == resource.data.createdAt &&
+                         isValidPendingChange(request.resource.data, schoolId) &&
+                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reviewedByName', 'updatedAt']);
+
+        allow delete: if isValidSchoolCode(schoolId) && isValidId(changeId);
+      }
+
+      match /parentNotices/{noticeId} {
+        allow get, list: if isValidSchoolCode(schoolId);
+
+        allow create: if isValidSchoolCode(schoolId) && isValidId(noticeId) &&
+                         request.resource.data.keys().hasAll(['schoolId', 'audienceType', 'targetLabel', 'recipientCount', 'channel', 'messageBody', 'createdAt', 'updatedAt']) &&
+                         request.resource.data.keys().hasOnly(['schoolId', 'audienceType', 'targetLabel', 'recipientCount', 'channel', 'title', 'messageBody', 'sentByName', 'createdAt', 'updatedAt']) &&
+                         isValidSchoolParentNotice(request.resource.data, schoolId);
+
+        allow update: if isValidSchoolCode(schoolId) && isValidId(noticeId) &&
+                         request.resource.data.schoolId == resource.data.schoolId &&
+                         request.resource.data.createdAt == resource.data.createdAt &&
+                         isValidSchoolParentNotice(request.resource.data, schoolId) &&
+                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['audienceType', 'targetLabel', 'recipientCount', 'channel', 'title', 'messageBody', 'updatedAt']);
+
+        allow delete: if isValidSchoolCode(schoolId) && isValidId(noticeId);
+      }
+
+      match /messages/{messageId} {
+        allow get, list: if isValidSchoolCode(schoolId);
+
+        allow create: if isValidSchoolCode(schoolId) && isValidId(messageId) &&
+                         request.resource.data.keys().hasAll(['schoolId', 'roomId', 'senderUid', 'senderName', 'text', 'editedFlag', 'createdAt', 'updatedAt']) &&
+                         request.resource.data.keys().hasOnly(['schoolId', 'roomId', 'senderUid', 'senderName', 'tag', 'text', 'editedFlag', 'createdAt', 'updatedAt']) &&
+                         isValidSchoolChatMessage(request.resource.data, schoolId);
+
+        allow update: if isValidSchoolCode(schoolId) && isValidId(messageId) &&
+                         request.resource.data.schoolId == resource.data.schoolId &&
+                         request.resource.data.senderUid == resource.data.senderUid &&
+                         request.resource.data.createdAt == resource.data.createdAt &&
+                         isValidSchoolChatMessage(request.resource.data, schoolId) &&
+                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text', 'tag', 'editedFlag', 'updatedAt']);
+
+        allow delete: if isValidSchoolCode(schoolId) && isValidId(messageId);
+      }
+    }
+
+    // ─────────────────────────── LEGACY V1.0 USER COLLECTIONS (READ/MIGRATE SUPPORT ONLY) ───────────────────────────
+
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false;
+      allow write: if isOwner(userId) && isValidId(userId);
+
+      match /{subcollection}/{docId} {
+        allow read, write: if isOwner(userId) && isValidId(docId);
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "My School",
+  "description": "Primary school student register, single-page student profiles with passport photos, graphical performance charts, Excel/Google Drive backup & restore, and teacher-parent communication.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

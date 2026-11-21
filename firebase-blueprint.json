@@ -1,0 +1,102 @@
+{
+  "entities": {
+    "SchoolWorkspace": {
+      "description": "Shared primary school workspace identified by a unique School ID without login",
+      "properties": {
+        "schoolId": { "type": "string" },
+        "schoolName": { "type": "string" },
+        "emisCode": { "type": "string" },
+        "upazilaDistrict": { "type": "string" },
+        "defaultAcademicYear": { "type": "integer" },
+        "adminDeviceId": { "type": "string" },
+        "adminName": { "type": "string" },
+        "teachers": { "type": "array" },
+        "examConfigs": { "type": "array" },
+        "recentMessages": { "type": "array" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["schoolId", "schoolName", "defaultAcademicYear", "adminDeviceId", "adminName", "createdAt", "updatedAt"]
+    },
+    "StudentRecord": {
+      "description": "Student register entry with fixed core, yearly, photo, dynamic subject/category maps, 3-exam marksheet results, and per-field comments",
+      "properties": {
+        "schoolId": { "type": "string" },
+        "studentNameEn": { "type": "string" },
+        "studentNameBn": { "type": "string" },
+        "fatherNameEn": { "type": "string" },
+        "motherNameEn": { "type": "string" },
+        "dateOfBirth": { "type": "string" },
+        "guardianPhone": { "type": "string" },
+        "address": { "type": "string" },
+        "photoBase64": { "type": "string" },
+        "rollNumber": { "type": "string" },
+        "classLevel": { "type": "string" },
+        "section": { "type": "string" },
+        "academicYear": { "type": "integer" },
+        "totalSchoolDays": { "type": "integer" },
+        "daysPresent": { "type": "integer" },
+        "promotionStatus": { "type": "string" },
+        "customValues": { "type": "object" },
+        "subjectValues": { "type": "object" },
+        "examResults": { "type": "object" },
+        "sectorNotes": { "type": "object" },
+        "lastUpdatedByName": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["schoolId", "studentNameEn", "rollNumber", "classLevel", "academicYear", "createdAt", "updatedAt"]
+    },
+    "AttendanceLog": {
+      "description": "Class-separated daily attendance sheet used to compute weekly, monthly, and yearly attendance views",
+      "properties": {
+        "schoolId": { "type": "string" },
+        "academicYear": { "type": "integer" },
+        "classLevel": { "type": "string" },
+        "dateKey": { "type": "string" },
+        "monthKey": { "type": "string" },
+        "statuses": { "type": "object" },
+        "markedByName": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["schoolId", "academicYear", "classLevel", "dateKey", "monthKey", "statuses", "createdAt", "updatedAt"]
+    },
+    "PendingChangeRequest": {
+      "description": "Teacher-submitted additions and modifications queued for School Admin confirmation",
+      "properties": {
+        "schoolId": { "type": "string" },
+        "entityType": { "type": "string" },
+        "targetId": { "type": "string" },
+        "submittedByDeviceId": { "type": "string" },
+        "submittedByName": { "type": "string" },
+        "summary": { "type": "string" },
+        "detailsText": { "type": "string" },
+        "payloadJson": { "type": "string" },
+        "status": { "type": "string" },
+        "reviewedByName": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["schoolId", "entityType", "submittedByDeviceId", "submittedByName", "summary", "payloadJson", "status", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "schools/{schoolId}": {
+      "schema": { "$ref": "#/entities/SchoolWorkspace" },
+      "description": "Shared school workspaces accessible by unique schoolId without password/auth"
+    },
+    "schools/{schoolId}/students/{studentId}": {
+      "schema": { "$ref": "#/entities/StudentRecord" },
+      "description": "Students enrolled in the school"
+    },
+    "schools/{schoolId}/attendanceLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AttendanceLog" },
+      "description": "Class-wise daily attendance records"
+    },
+    "schools/{schoolId}/pendingChanges/{changeId}": {
+      "schema": { "$ref": "#/entities/PendingChangeRequest" },
+      "description": "Pending teacher edits awaiting Admin confirmation"
+    }
+  }
+}
