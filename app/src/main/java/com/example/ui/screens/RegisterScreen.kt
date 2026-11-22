@@ -21,6 +21,7 @@ import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
@@ -79,6 +80,7 @@ fun RegisterScreen(
     onAddStudent: () -> Unit,
     onSaveBatch: (Map<String, Map<String, Any>>, onSuccess: () -> Unit) -> Unit,
     onOpenFieldManager: () -> Unit,
+    onOpenPromotionManager: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var subMode by remember(initialBatchMode, initialBatchSubjectId) {
@@ -128,6 +130,13 @@ fun RegisterScreen(
                 Icon(Icons.Rounded.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(4.dp))
                 Text("Subjects")
+            }
+            FilledTonalButton(
+                onClick = onOpenPromotionManager,
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                modifier = Modifier.testTag("register_open_promotion_button")
+            ) {
+                Icon(Icons.Rounded.SwapVert, contentDescription = "Promotion & Rolls", modifier = Modifier.size(16.dp))
             }
         }
 

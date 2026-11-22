@@ -51,6 +51,7 @@ data class StudentRecord(
 
     // 2. YEARLY FIELDS (Changeable every academic year)
     val rollNumber: String = "",
+    val nextYearRollNumber: String = "",
     val classLevel: String = "Class 1",
     val section: String = "A",
     val academicYear: Long = 2026L,
@@ -254,6 +255,7 @@ data class StudentRecord(
             "address" to effectiveAddress().trim().take(250),
             "photoBase64" to photoBase64.take(140000),
             "rollNumber" to rollNumber.trim().take(20),
+            "nextYearRollNumber" to nextYearRollNumber.trim().take(20),
             "classLevel" to classLevel.trim().ifBlank { "Class 1" }.take(40),
             "section" to section.trim().take(30),
             "academicYear" to academicYear.coerceIn(2020L, 2050L),

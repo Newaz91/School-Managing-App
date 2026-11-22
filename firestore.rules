@@ -33,6 +33,8 @@ service cloud.firestore {
              (!('emisCode' in d) || (d.emisCode is string && d.emisCode.size() <= 30)) &&
              (!('upazilaDistrict' in d) || (d.upazilaDistrict is string && d.upazilaDistrict.size() <= 100)) &&
              d.defaultAcademicYear is int && d.defaultAcademicYear >= 2020 && d.defaultAcademicYear <= 2050 &&
+             (!('lastAutoRolloverYear' in d) || (d.lastAutoRolloverYear is int && d.lastAutoRolloverYear >= 0 && d.lastAutoRolloverYear <= 2050)) &&
+             (!('teachersPanelVersion' in d) || (d.teachersPanelVersion is int && d.teachersPanelVersion >= 1 && d.teachersPanelVersion <= 100)) &&
              d.adminDeviceId is string && d.adminDeviceId.size() >= 1 && d.adminDeviceId.size() <= 64 &&
              d.adminName is string && d.adminName.size() >= 1 && d.adminName.size() <= 100 &&
              (!('teachers' in d) || (d.teachers is list && d.teachers.size() <= 60)) &&
@@ -53,6 +55,7 @@ service cloud.firestore {
              (!('address' in d) || (d.address is string && d.address.size() <= 250)) &&
              (!('photoBase64' in d) || (d.photoBase64 is string && d.photoBase64.size() <= 140000)) &&
              d.rollNumber is string && d.rollNumber.size() >= 1 && d.rollNumber.size() <= 20 &&
+             (!('nextYearRollNumber' in d) || (d.nextYearRollNumber is string && d.nextYearRollNumber.size() <= 20)) &&
              d.classLevel is string && d.classLevel.size() >= 1 && d.classLevel.size() <= 40 &&
              (!('section' in d) || (d.section is string && d.section.size() <= 30)) &&
              d.academicYear is int && d.academicYear >= 2020 && d.academicYear <= 2050 &&
@@ -153,7 +156,8 @@ service cloud.firestore {
                        request.resource.data.keys().hasAll(['schoolId', 'schoolName', 'defaultAcademicYear', 'adminDeviceId', 'adminName', 'createdAt', 'updatedAt']) &&
                        request.resource.data.keys().hasOnly([
                          'schoolId', 'schoolName', 'emisCode', 'upazilaDistrict',
-                         'defaultAcademicYear', 'adminDeviceId', 'adminName',
+                         'defaultAcademicYear', 'lastAutoRolloverYear', 'teachersPanelVersion',
+                         'adminDeviceId', 'adminName',
                          'teachers', 'examConfigs', 'recentMessages',
                          'createdAt', 'updatedAt'
                        ]) &&
@@ -165,6 +169,7 @@ service cloud.firestore {
                        isValidSchoolWorkspace(request.resource.data, schoolId) &&
                        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
                          'schoolName', 'emisCode', 'upazilaDistrict', 'defaultAcademicYear',
+                         'lastAutoRolloverYear', 'teachersPanelVersion',
                          'adminDeviceId', 'adminName', 'teachers', 'examConfigs',
                          'recentMessages', 'updatedAt'
                        ]);
@@ -180,7 +185,7 @@ service cloud.firestore {
                            'schoolId', 'createdAt', 'updatedAt',
                            'studentNameEn', 'studentNameBn', 'fatherNameEn', 'motherNameEn',
                            'dateOfBirth', 'guardianPhone', 'address', 'photoBase64',
-                           'rollNumber', 'classLevel', 'section', 'academicYear',
+                           'rollNumber', 'nextYearRollNumber', 'classLevel', 'section', 'academicYear',
                            'totalSchoolDays', 'daysPresent', 'promotionStatus',
                            'customValues', 'subjectValues', 'examResults', 'sectorNotes', 'lastUpdatedByName'
                          ]) &&
@@ -194,7 +199,7 @@ service cloud.firestore {
                            'updatedAt',
                            'studentNameEn', 'studentNameBn', 'fatherNameEn', 'motherNameEn',
                            'dateOfBirth', 'guardianPhone', 'address', 'photoBase64',
-                           'rollNumber', 'classLevel', 'section', 'academicYear',
+                           'rollNumber', 'nextYearRollNumber', 'classLevel', 'section', 'academicYear',
                            'totalSchoolDays', 'daysPresent', 'promotionStatus',
                            'customValues', 'subjectValues', 'examResults', 'sectorNotes', 'lastUpdatedByName'
                          ]);

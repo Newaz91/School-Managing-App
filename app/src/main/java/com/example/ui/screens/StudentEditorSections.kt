@@ -267,6 +267,18 @@ fun YearlySectionFields(
             required = true,
             allowClear = false
         )
+        FlexibleFieldInput(
+            fieldKey = "yearly_next_roll",
+            badgeLabel = "Yearly",
+            label = "Next Year Roll / Position (31 Dec Auto)",
+            value = student.nextYearRollNumber,
+            onValueChange = { onChange(student.copy(nextYearRollNumber = it)) },
+            detailNote = student.noteForKey("yearly_next_roll"),
+            onDetailNoteChange = { onChange(student.withNoteForKey("yearly_next_roll", it)) },
+            forceExpandDetail = expandAllDetails,
+            placeholder = "Optional new serial for ${student.academicYear + 1}",
+            keyboardType = KeyboardType.Number
+        )
         FlexibleChipSelector(
             fieldKey = "yearly_section",
             badgeLabel = "Yearly",

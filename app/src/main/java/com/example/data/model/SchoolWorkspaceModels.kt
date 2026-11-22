@@ -67,12 +67,16 @@ object ChangeEntityTypes {
 data class SchoolTeacherMember(
     val deviceId: String = "",
     val name: String = "",
+    val phoneNumber: String = "",
+    val passwordHash: String = "",
     val role: String = TeacherRoles.USER,
     val joinedAtMs: Long = 0L
 ) {
     fun toMap(): Map<String, Any> = mapOf(
         "deviceId" to deviceId.take(64),
         "name" to name.trim().ifBlank { "Teacher" }.take(100),
+        "phoneNumber" to TeacherProfile.normalizePhone(phoneNumber).take(25),
+        "passwordHash" to passwordHash.trim().take(128),
         "role" to if (role == TeacherRoles.ADMIN) TeacherRoles.ADMIN else TeacherRoles.USER,
         "joinedAtMs" to joinedAtMs
     )
@@ -145,6 +149,8 @@ data class SchoolWorkspace(
     val emisCode: String = "",
     val upazilaDistrict: String = "",
     val defaultAcademicYear: Long = 2026L,
+    val lastAutoRolloverYear: Long = 0L,
+    val teachersPanelVersion: Long = 1L,
     val adminDeviceId: String = "",
     val adminName: String = "",
     val teachers: List<SchoolTeacherMember> = emptyList(),
@@ -155,6 +161,30 @@ data class SchoolWorkspace(
 ) {
     fun isDeviceAdmin(deviceId: String): Boolean =
         adminDeviceId.isNotBlank() && adminDeviceId == deviceId
+
+    fun findTeacher(deviceId: String, phoneNumber: String = ""): SchoolTeacherMember? {
+        val normPhone = TeacherProfile.normalizePhone(phoneNumber)
+        if (normPhone.isNotBlank()) {
+            val byPhone = teachers.firstOrNull {
+                it.phoneNumber.isNotBlank() && TeacherProfile.normalizePhone(it.phoneNumber) == normPhone
+            }
+            if (byPhone != null) return byPhone
+        }
+        return teachers.firstOrNull { it.deviceId == deviceId }
+    }
+
+    fun isTeacherAdmin(deviceId: String, phoneNumber: String = ""): Boolean {
+        val normPhone = TeacherProfile.normalizePhone(phoneNumber)
+        if (normPhone.isNotBlank()) {
+            val byPhone = teachers.firstOrNull {
+                it.phoneNumber.isNotBlank() && TeacherProfile.normalizePhone(it.phoneNumber) == normPhone
+            }
+            if (byPhone != null) {
+                return byPhone.role.equals(TeacherRoles.ADMIN, ignoreCase = true)
+            }
+        }
+        return isDeviceAdmin(deviceId)
+    }
 
     fun toTeacherProfileView(activeTeacherName: String): TeacherProfile =
         TeacherProfile(
@@ -174,6 +204,8 @@ data class SchoolWorkspace(
         "emisCode" to emisCode.trim().take(30),
         "upazilaDistrict" to upazilaDistrict.trim().take(100),
         "defaultAcademicYear" to defaultAcademicYear.coerceIn(2020L, 2050L),
+        "lastAutoRolloverYear" to lastAutoRolloverYear.coerceIn(0L, 2050L),
+        "teachersPanelVersion" to teachersPanelVersion.coerceAtLeast(2L),
         "adminDeviceId" to adminDeviceId.take(64),
         "adminName" to adminName.trim().ifBlank { "Head Teacher" }.take(100),
         "teachers" to teachers.take(60).map { it.toMap() },
@@ -290,6 +322,7 @@ object PendingPayloadCodec {
         put("address", student.effectiveAddress())
         put("photoBase64", student.photoBase64)
         put("rollNumber", student.rollNumber)
+        put("nextYearRollNumber", student.nextYearRollNumber)
         put("classLevel", student.classLevel)
         put("section", student.section)
         put("academicYear", student.academicYear)
@@ -315,6 +348,7 @@ object PendingPayloadCodec {
             address = obj.optString("address", ""),
             photoBase64 = obj.optString("photoBase64", ""),
             rollNumber = obj.optString("rollNumber", ""),
+            nextYearRollNumber = obj.optString("nextYearRollNumber", ""),
             classLevel = obj.optString("classLevel", "Class 1"),
             section = obj.optString("section", "A"),
             academicYear = obj.optLong("academicYear", 2026L),

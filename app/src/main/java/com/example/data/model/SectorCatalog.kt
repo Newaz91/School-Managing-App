@@ -14,8 +14,8 @@ enum class EditorSectionTab(
 
 object SectorOptions {
     val sections = listOf("A", "B", "C", "Common")
-    val promotionStatuses = listOf("Studying", "Promoted", "Repeating", "Transferred")
-    val academicYears = listOf(2025, 2026, 2027)
+    val promotionStatuses = listOf("Studying", "Promoted", "Not Promoted", "Passed Out", "Transferred")
+    val academicYears = listOf(2025, 2026, 2027, 2028)
 }
 
 object StudentsCsvExporter {

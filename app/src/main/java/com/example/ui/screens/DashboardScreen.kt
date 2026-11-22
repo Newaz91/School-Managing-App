@@ -31,6 +31,7 @@ import androidx.compose.material.icons.rounded.HourglassTop
 import androidx.compose.material.icons.rounded.Insights
 import androidx.compose.material.icons.rounded.MenuBook
 import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -80,6 +81,7 @@ fun DashboardScreen(
     onExportReport: () -> Unit,
     onOpenBackupRestore: () -> Unit,
     onShareApp: () -> Unit,
+    onOpenPromotionManager: () -> Unit = {},
     onOpenSchoolSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -481,16 +483,32 @@ fun DashboardScreen(
                             Text("Export Data", maxLines = 1)
                         }
                     }
-                    FilledTonalButton(
-                        onClick = onShareApp,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .testTag("dashboard_share_app_button")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Icon(Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Share App & School ID ($schoolId)", maxLines = 1)
+                        FilledTonalButton(
+                            onClick = onOpenPromotionManager,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .testTag("dashboard_promotion_button")
+                        ) {
+                            Icon(Icons.Rounded.SwapVert, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Promotion & Rolls", maxLines = 1)
+                        }
+                        FilledTonalButton(
+                            onClick = onShareApp,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .testTag("dashboard_share_app_button")
+                        ) {
+                            Icon(Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Share School ID", maxLines = 1)
+                        }
                     }
                 }
             }

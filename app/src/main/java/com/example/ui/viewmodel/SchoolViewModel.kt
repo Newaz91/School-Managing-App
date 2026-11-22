@@ -1,9 +1,11 @@
 package com.example.ui.viewmodel
 
+import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.firebase.SchoolRepository
+import com.example.data.local.AppPreferences
 import com.example.data.model.AttendanceLog
 import com.example.data.model.ChangeEntityTypes
 import com.example.data.model.ChangeStatuses
@@ -19,7 +21,9 @@ import com.example.data.model.SchoolWorkspace
 import com.example.data.model.StudentRecord
 import com.example.data.model.SubjectDefinition
 import com.example.data.model.SubjectFieldDef
+import com.example.data.model.TeacherProfile
 import com.example.data.model.generateShortId
+import com.example.data.model.normalizeSchoolId
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -59,6 +63,7 @@ class SchoolViewModel(
     val schoolId: String,
     val deviceId: String,
     val teacherName: String,
+    val teacherPhone: String = "",
     initialYear: Int = 2026
 ) : ViewModel() {
 
@@ -107,7 +112,7 @@ class SchoolViewModel(
     val isAdminState: StateFlow<Boolean> = schoolWorkspaceState
         .map { state ->
             val ws = (state as? UiState.Success)?.data
-            ws?.isDeviceAdmin(deviceId) == true
+            ws?.isTeacherAdmin(deviceId, teacherPhone) == true
         }
         .stateIn(
             scope = viewModelScope,
@@ -269,7 +274,7 @@ class SchoolViewModel(
 
     private fun activeActorName(): String {
         val ws = (schoolWorkspaceState.value as? UiState.Success)?.data
-        val fromWs = ws?.teachers?.firstOrNull { it.deviceId == deviceId }?.name
+        val fromWs = ws?.findTeacher(deviceId, teacherPhone)?.name
         return fromWs?.takeIf { it.isNotBlank() } ?: teacherName.ifBlank { "Teacher" }
     }
 
@@ -399,7 +404,7 @@ class SchoolViewModel(
         }
     }
 
-    fun promoteEligibleStudentsToNextYear(targetYear: Int) {
+    fun promoteEligibleStudentsToNextYear(targetYear: Int, isAutoRollover: Boolean = false) {
         if (!isAdminState.value) {
             _feedbackMessage.value = "Only the School Admin can promote classes into a new year."
             return
@@ -407,28 +412,101 @@ class SchoolViewModel(
         val currentList = (studentsState.value as? UiState.Success)?.data ?: emptyList()
         val customFields = (customFieldsState.value as? UiState.Success)?.data ?: emptyList()
         val yearlyFieldIds = customFields.filter { it.resetsYearly }.map { it.id }.toSet()
-        val eligible = currentList.filter {
-            it.promotionStatus == "Promoted" && it.classLevel != ClassLevels.ALL.last()
+        val eligible = currentList.filter { s ->
+            s.promotionStatus == "Promoted" ||
+                s.promotionStatus == "Not Promoted" ||
+                (isAutoRollover && (s.promotionStatus == "Studying" || s.promotionStatus.isBlank()))
         }
         if (eligible.isEmpty()) {
-            _feedbackMessage.value = "Mark students as 'Promoted' (Pre-Primary to Class 4) before rolling forward."
+            if (!isAutoRollover) {
+                _feedbackMessage.value = "Mark students as 'Promoted' or 'Not Promoted' before rolling forward."
+            }
             return
         }
         viewModelScope.launch {
             _isSaving.value = true
             val result = repository.promoteStudentsToNextYear(
                 schoolId = schoolId,
-                studentsToPromote = eligible,
+                studentsToPromote = currentList,
                 targetYear = targetYear,
                 yearlyCustomFieldIds = yearlyFieldIds,
-                actorName = activeActorName()
+                actorName = activeActorName(),
+                includeStudyingInSameClass = isAutoRollover
             )
             _isSaving.value = false
             result.onSuccess { count ->
                 _selectedYear.value = targetYear
-                _feedbackMessage.value = "Promoted $count student(s) into $targetYear register"
+                _feedbackMessage.value = if (isAutoRollover) {
+                    "Year-end promotion applied after Dec 31: updated $count student(s) into $targetYear"
+                } else {
+                    "Applied promotion & roll positions for $count student(s) into $targetYear"
+                }
             }.onFailure { err ->
                 _feedbackMessage.value = err.message ?: "Year promotion failed."
+            }
+        }
+    }
+
+    fun checkAndRunAutoCalendarYearRollover(context: Context, currentCalendarYear: Int) {
+        if (!isAdminState.value) return
+        val ws = (schoolWorkspaceState.value as? UiState.Success)?.data ?: return
+        val currentList = (studentsState.value as? UiState.Success)?.data ?: return
+        if (currentList.isEmpty()) return
+        if (currentCalendarYear <= ws.defaultAcademicYear || currentCalendarYear <= ws.lastAutoRolloverYear) return
+        if (AppPreferences.getLastAutoRolloverYear(context, schoolId) >= currentCalendarYear) return
+
+        val eligibleToRoll = currentList.any {
+            it.academicYear < currentCalendarYear &&
+                (it.promotionStatus == "Promoted" || it.promotionStatus == "Not Promoted")
+        }
+        AppPreferences.markAutoRolloverDone(context, schoolId, currentCalendarYear)
+        if (eligibleToRoll) {
+            promoteEligibleStudentsToNextYear(targetYear = currentCalendarYear, isAutoRollover = true)
+        }
+    }
+
+    fun verifyAdminPassword(context: Context, plainPassword: String): Boolean {
+        if (plainPassword.length < 4) return false
+        val ws = (schoolWorkspaceState.value as? UiState.Success)?.data
+        val firestoreHash = ws?.findTeacher(deviceId, teacherPhone)?.passwordHash.orEmpty()
+        if (firestoreHash.isNotBlank() && TeacherProfile.verifyPassword(plainPassword, firestoreHash)) {
+            return true
+        }
+        val normPhone = TeacherProfile.normalizePhone(teacherPhone)
+        if (normPhone.isNotBlank()) {
+            val localKey = "cred_${normalizeSchoolId(schoolId)}_${normPhone}_hash"
+            val localHash = AppPreferences.authPrefs(context).getString(localKey, "").orEmpty()
+            if (localHash.isNotBlank() && TeacherProfile.verifyPassword(plainPassword, localHash)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    fun resetTeachersPanel(context: Context) {
+        if (!isAdminState.value) return
+        val ws = (schoolWorkspaceState.value as? UiState.Success)?.data
+        val firestoreHash = ws?.findTeacher(deviceId, teacherPhone)?.passwordHash.orEmpty()
+        val normPhone = TeacherProfile.normalizePhone(teacherPhone)
+        val effectiveHash = firestoreHash.ifBlank {
+            if (normPhone.isNotBlank()) {
+                AppPreferences.authPrefs(context).getString("cred_${normalizeSchoolId(schoolId)}_${normPhone}_hash", "").orEmpty()
+            } else ""
+        }
+        viewModelScope.launch {
+            _isSaving.value = true
+            val result = repository.resetTeachersAndAdminPanel(
+                rawSchoolId = schoolId,
+                newAdminName = activeActorName(),
+                adminDeviceId = deviceId,
+                phoneNumber = teacherPhone,
+                passwordHash = effectiveHash
+            )
+            _isSaving.value = false
+            result.onSuccess {
+                _feedbackMessage.value = "Teachers panel reset — student & subject data preserved."
+            }.onFailure { err ->
+                _feedbackMessage.value = err.message ?: "Could not reset teachers panel."
             }
         }
     }

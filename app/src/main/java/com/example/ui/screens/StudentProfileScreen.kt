@@ -853,6 +853,9 @@ private fun YearlyDossierCard(
             DossierDetailRow("Academic Year", student.academicYear.toString(), student.noteForKey("yearly_year"))
             DossierDetailRow("Class Name", student.classLevel, student.noteForKey("yearly_class"))
             DossierDetailRow("Roll Number", student.rollNumber.ifBlank { "—" }, student.noteForKey("yearly_roll"))
+            if (student.nextYearRollNumber.isNotBlank()) {
+                DossierDetailRow("Next Year Roll (${student.academicYear + 1})", student.nextYearRollNumber, student.noteForKey("yearly_next_roll"))
+            }
             DossierDetailRow("Section", student.section.ifBlank { "—" }, student.noteForKey("yearly_section"))
             DossierDetailRow(
                 "Attendance",

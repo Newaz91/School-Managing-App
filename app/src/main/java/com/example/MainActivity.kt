@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.EventAvailable
 import androidx.compose.material.icons.outlined.Groups
@@ -39,6 +40,7 @@ import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material.icons.rounded.School
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -98,6 +100,7 @@ import com.example.ui.screens.AttendanceSheetScreen
 import com.example.ui.screens.ConnectScreen
 import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.FieldSchemaManagerScreen
+import com.example.ui.screens.PromotionRollManagerScreen
 import com.example.ui.screens.RegisterScreen
 import com.example.ui.screens.SchoolEntryScreen
 import com.example.ui.screens.SchoolSettingsScreen
@@ -111,6 +114,7 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.firestoreSettings
 import com.google.firebase.firestore.persistentCacheSettings
 import kotlinx.coroutines.launch
+import java.util.Calendar
 
 enum class MainTab(
     val label: String,
@@ -173,19 +177,21 @@ fun AppNavigation() {
         SchoolEntryScreen(
             deviceId = session.deviceId,
             initialTeacherName = session.teacherName,
+            initialTeacherPhone = session.teacherPhone,
             recentSchools = session.recentSchools,
             repository = repository,
-            onEnteredSchool = { schoolId, teacherName ->
-                AppPreferences.saveActiveSchool(context, schoolId, teacherName)
+            onEnteredSchool = { schoolId, teacherName, teacherPhone ->
+                AppPreferences.saveActiveSchool(context, schoolId, teacherName, teacherPhone)
                 session = AppPreferences.loadSession(context, BuildConfig.VERSION_CODE)
             }
         )
     } else {
-        key(session.activeSchoolId, session.deviceId) {
+        key(session.activeSchoolId, session.deviceId, session.teacherPhone) {
             SharedSchoolApp(
                 schoolId = session.activeSchoolId,
                 deviceId = session.deviceId,
                 teacherName = session.teacherName,
+                teacherPhone = session.teacherPhone,
                 initialYear = session.selectedYear,
                 upgradedNotice = session.upgradedNoticeMessage,
                 db = db,
@@ -204,6 +210,7 @@ fun SharedSchoolApp(
     schoolId: String,
     deviceId: String,
     teacherName: String,
+    teacherPhone: String,
     initialYear: Int,
     upgradedNotice: String?,
     db: FirebaseFirestore,
@@ -213,7 +220,7 @@ fun SharedSchoolApp(
     val scope = rememberCoroutineScope()
 
     val viewModel: SchoolViewModel = viewModel(
-        key = "${schoolId}_${deviceId}",
+        key = "${schoolId}_${deviceId}_${teacherPhone}",
         factory = viewModelFactory {
             initializer {
                 SchoolViewModel(
@@ -221,6 +228,7 @@ fun SharedSchoolApp(
                     schoolId = schoolId,
                     deviceId = deviceId,
                     teacherName = teacherName,
+                    teacherPhone = teacherPhone,
                     initialYear = initialYear
                 )
             }
@@ -251,6 +259,7 @@ fun SharedSchoolApp(
     var batchTargetClass by remember { mutableStateOf<String?>(null) }
     var batchTargetSubjectId by remember { mutableStateOf<String?>(null) }
     var showFieldManager by remember { mutableStateOf(false) }
+    var showPromotionManager by remember { mutableStateOf(false) }
     var showTopMenu by remember { mutableStateOf(false) }
     var showShareAppDialog by remember { mutableStateOf(false) }
     var viewingProfileStudent by remember { mutableStateOf<StudentRecord?>(null) }
@@ -276,6 +285,13 @@ fun SharedSchoolApp(
     LaunchedEffect(upgradedNotice) {
         if (!upgradedNotice.isNullOrBlank()) {
             snackbarHostState.showSnackbar(upgradedNotice)
+        }
+    }
+
+    LaunchedEffect(workspace, isAdmin, allStudents.size) {
+        if (workspace != null && isAdmin && allStudents.isNotEmpty()) {
+            val calendarYear = Calendar.getInstance().get(Calendar.YEAR)
+            viewModel.checkAndRunAutoCalendarYearRollover(context, calendarYear)
         }
     }
 
@@ -426,7 +442,20 @@ fun SharedSchoolApp(
         allStudents.firstOrNull { it.id == activeProfileRaw.id } ?: activeProfileRaw
     } else null
 
-    if (showFieldManager) {
+    if (showPromotionManager) {
+        PromotionRollManagerScreen(
+            allStudents = allStudents,
+            selectedYear = selectedYear,
+            initialSelectedClass = selectedClassFilter,
+            isAdmin = isAdmin,
+            isSaving = isSaving,
+            onSaveBatch = viewModel::saveBatchUpdates,
+            onRunPromotion = { targetYear ->
+                viewModel.promoteEligibleStudentsToNextYear(targetYear)
+            },
+            onBack = { showPromotionManager = false }
+        )
+    } else if (showFieldManager) {
         FieldSchemaManagerScreen(
             subjects = subjects,
             customFields = customFields,
@@ -666,6 +695,22 @@ fun SharedSchoolApp(
                                             )
                                         }
                                     )
+                                    DropdownMenuItem(
+                                        text = { Text("Promotion & Roll Positions") },
+                                        leadingIcon = { Icon(Icons.Rounded.SwapVert, contentDescription = null) },
+                                        onClick = {
+                                            showTopMenu = false
+                                            showPromotionManager = true
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Logout / Switch School") },
+                                        leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Logout, contentDescription = null) },
+                                        onClick = {
+                                            showTopMenu = false
+                                            onSwitchSchool()
+                                        }
+                                    )
                                 }
                             }
                         },
@@ -806,6 +851,7 @@ fun SharedSchoolApp(
                                 activeTab = MainTab.SCHOOL
                             },
                             onShareApp = { showShareAppDialog = true },
+                            onOpenPromotionManager = { showPromotionManager = true },
                             onOpenSchoolSettings = {
                                 activeSchoolSubTab = SchoolSubTab.SETTINGS
                                 activeTab = MainTab.SCHOOL
@@ -831,7 +877,8 @@ fun SharedSchoolApp(
                             onStudentClick = { student -> viewingProfileStudent = student },
                             onAddStudent = openNewStudent,
                             onSaveBatch = viewModel::saveBatchUpdates,
-                            onOpenFieldManager = { showFieldManager = true }
+                            onOpenFieldManager = { showFieldManager = true },
+                            onOpenPromotionManager = { showPromotionManager = true }
                         )
 
                         MainTab.ATTENDANCE -> AttendanceSheetScreen(
@@ -939,6 +986,8 @@ fun SharedSchoolApp(
                                     onUpdateSchoolDetails = viewModel::updateSchoolDetails,
                                     onSaveExamConfigs = viewModel::saveExamConfigs,
                                     onTransferAdmin = viewModel::transferAdminRole,
+                                    onVerifyAdminPassword = { pw -> viewModel.verifyAdminPassword(context, pw) },
+                                    onResetTeachersPanel = { viewModel.resetTeachersPanel(context) },
                                     onSwitchSchool = onSwitchSchool,
                                     onMigrateLegacyData = viewModel::migrateLegacyRecordsIfAny,
                                     onOpenFieldManager = { showFieldManager = true },
@@ -952,6 +1001,7 @@ fun SharedSchoolApp(
                                     onBackupExcelToCloudShare = launchExcelBackupToCloudShare,
                                     onRestoreFromDeviceOrDrive = launchRestorePicker,
                                     onShareApp = { showShareAppDialog = true },
+                                    onOpenPromotionManager = { showPromotionManager = true },
                                     onPromoteToNextYear = viewModel::promoteEligibleStudentsToNextYear,
                                     modifier = Modifier.weight(1f)
                                 )

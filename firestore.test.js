@@ -31,6 +31,7 @@ function buildStudentPayload(schoolId, created, updated) {
     address: "Purbo Para, Ward 3, Kachua, Chandpur",
     photoBase64: "abc123samplebase64photo",
     rollNumber: "01",
+    nextYearRollNumber: "02",
     classLevel: "Class 4",
     section: "A",
     academicYear: 2026,
@@ -89,9 +90,11 @@ test("Shared School ID supports multi-teacher access without login, class attend
       emisCode: "91020401",
       upazilaDistrict: "Sadar, Cumilla",
       defaultAcademicYear: 2026,
+      lastAutoRolloverYear: 0,
+      teachersPanelVersion: 2,
       adminDeviceId: ADMIN_DEV,
       adminName: "Head Teacher Karim",
-      teachers: [{ deviceId: ADMIN_DEV, name: "Head Teacher Karim", role: "ADMIN", joinedAtMs: 1700000000000 }],
+      teachers: [{ deviceId: ADMIN_DEV, name: "Head Teacher Karim", phoneNumber: "+8801711000000", passwordHash: "aabbcc", role: "ADMIN", joinedAtMs: 1700000000000 }],
       examConfigs: [
         { examId: "exam_1", title: "1st Term Exam", subjects: [] },
         { examId: "exam_2", title: "2nd Term Exam", subjects: [] },
@@ -103,12 +106,13 @@ test("Shared School ID supports multi-teacher access without login, class attend
     })
   );
 
-  // Another teacher joins same school ID
+  // Another teacher joins same school ID with phoneNumber & passwordHash
   await assertSucceeds(
     schoolRef.update({
+      teachersPanelVersion: 2,
       teachers: [
-        { deviceId: ADMIN_DEV, name: "Head Teacher Karim", role: "ADMIN", joinedAtMs: 1700000000000 },
-        { deviceId: TEACHER_DEV, name: "Ayesha Khatun", role: "USER", joinedAtMs: 1700000001000 },
+        { deviceId: ADMIN_DEV, name: "Head Teacher Karim", phoneNumber: "+8801711000000", passwordHash: "aabbcc", role: "ADMIN", joinedAtMs: 1700000000000 },
+        { deviceId: TEACHER_DEV, name: "Ayesha Khatun", phoneNumber: "+8801811000001", passwordHash: "ddeeff", role: "USER", joinedAtMs: 1700000001000 },
       ],
       updatedAt: new Date(Date.now() - 2000),
     })

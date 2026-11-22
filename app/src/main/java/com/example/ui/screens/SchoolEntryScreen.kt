@@ -53,6 +53,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -75,6 +76,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.data.firebase.SchoolRepository
+import com.example.data.model.SchoolWorkspace
 import com.example.data.model.TeacherProfile
 import com.example.data.model.generateUniqueSchoolNumber
 import com.example.data.model.normalizeSchoolId
@@ -102,9 +104,10 @@ private fun accountKey(schoolId: String, phone: String): String {
 fun SchoolEntryScreen(
     deviceId: String,
     initialTeacherName: String,
+    initialTeacherPhone: String = "",
     recentSchools: List<String>,
     repository: SchoolRepository,
-    onEnteredSchool: (schoolId: String, teacherName: String) -> Unit
+    onEnteredSchool: (schoolId: String, teacherName: String, teacherPhone: String) -> Unit
 ) {
     val context = LocalContext.current
     val credsPrefs = remember(context) {
@@ -120,9 +123,16 @@ fun SchoolEntryScreen(
     var upazilaDistrict by remember { mutableStateOf("") }
     var teacherName by remember { mutableStateOf(initialTeacherName) }
 
-    var phoneNumber by remember { mutableStateOf("") }
+    var phoneNumber by remember {
+        mutableStateOf(
+            initialTeacherPhone.ifBlank { credsPrefs.getString("last_phone", "").orEmpty() }
+        )
+    }
     var password by remember { mutableStateOf("") }
     var confirmPassword by remember { mutableStateOf("") }
+
+    // Remote school workspace lookup for cross-device password login & v1.1->v1.2 migration detection
+    var lookedUpWorkspace by remember { mutableStateOf<SchoolWorkspace?>(null) }
 
     // OTP & Forgot Password state
     var otpDigits by remember { mutableIntStateOf(6) }
@@ -135,6 +145,37 @@ fun SchoolEntryScreen(
     var isBusy by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
+    LaunchedEffect(mode, joinSchoolId) {
+        if (mode == EntryMode.JOIN) {
+            val cleanId = normalizeSchoolId(joinSchoolId)
+            lookedUpWorkspace = if (cleanId.length >= 2) {
+                repository.fetchSchoolWorkspaceOnce(cleanId).getOrNull()
+            } else null
+        } else {
+            lookedUpWorkspace = null
+        }
+    }
+
+    val normPhone = TeacherProfile.normalizePhone(phoneNumber)
+    val remoteTeacherMember = remember(lookedUpWorkspace, normPhone) {
+        val ws = lookedUpWorkspace
+        if (ws != null && ws.teachersPanelVersion >= 2L && normPhone.length >= 10) {
+            ws.teachers.firstOrNull {
+                it.phoneNumber.isNotBlank() && TeacherProfile.normalizePhone(it.phoneNumber) == normPhone
+            }
+        } else null
+    }
+    val remotePasswordHash = remoteTeacherMember?.passwordHash?.takeIf { it.isNotBlank() }
+
+    LaunchedEffect(remoteTeacherMember) {
+        if (remoteTeacherMember != null &&
+            remoteTeacherMember.name.isNotBlank() &&
+            teacherName.isBlank()
+        ) {
+            teacherName = remoteTeacherMember.name
+        }
+    }
+
     fun resetOtpState(clearBanner: Boolean = true) {
         generatedOtp = null
         otpInput = ""
@@ -144,12 +185,12 @@ fun SchoolEntryScreen(
 
     fun sendOtp(schoolKeyRaw: String) {
         val cleanSchool = normalizeSchoolId(schoolKeyRaw)
-        val normPhone = TeacherProfile.normalizePhone(phoneNumber)
+        val cleanPhone = TeacherProfile.normalizePhone(phoneNumber)
         if (cleanSchool.length < 2) {
             errorMessage = "Enter a valid School ID first."
             return
         }
-        if (normPhone.length < 10) {
+        if (cleanPhone.length < 10) {
             errorMessage = "Enter a valid phone number (e.g. 017XXXXXXXX) to receive OTP."
             return
         }
@@ -157,7 +198,7 @@ fun SchoolEntryScreen(
         val code = generateOtpCode(otpDigits)
         generatedOtp = code
         otpVerified = false
-        statusBanner = "A $otpDigits-digit OTP ($code) has been dispatched to $normPhone. Enter it below to verify."
+        statusBanner = "A $otpDigits-digit OTP ($code) has been sent to $cleanPhone. Enter it below to confirm."
     }
 
     fun verifyOtpCode() {
@@ -176,10 +217,10 @@ fun SchoolEntryScreen(
         }
     }
 
-    fun saveDeviceCredentials(schoolKeyRaw: String, phoneRaw: String, plainPassword: String, nameRaw: String) {
+    fun saveDeviceCredentials(schoolKeyRaw: String, phoneRaw: String, passwordHash: String, nameRaw: String) {
         val key = accountKey(schoolKeyRaw, phoneRaw)
         credsPrefs.edit()
-            .putString("${key}_hash", TeacherProfile.hashPassword(plainPassword))
+            .putString("${key}_hash", passwordHash)
             .putString("${key}_name", nameRaw.trim())
             .putString("last_phone", TeacherProfile.normalizePhone(phoneRaw))
             .apply()
@@ -189,6 +230,177 @@ fun SchoolEntryScreen(
         if (pw.length < 4) return "Password must be at least 4 characters."
         if (pw != confirmPw) return "Password and Confirm Password do not match."
         return null
+    }
+
+    val submitJoinAction: () -> Unit = {
+        scope.launch {
+            val cleanId = normalizeSchoolId(joinSchoolId)
+            val cleanTeacher = teacherName.trim()
+            val cleanPhone = TeacherProfile.normalizePhone(phoneNumber)
+            if (cleanId.length < 2 || cleanTeacher.isEmpty() || cleanPhone.length < 10) {
+                errorMessage = "Enter Teacher Name, School ID, and valid Phone Number."
+                return@launch
+            }
+
+            // Refresh workspace state right before submit to prevent stale state
+            val freshWs = repository.fetchSchoolWorkspaceOnce(cleanId).getOrNull() ?: lookedUpWorkspace
+            if (freshWs == null) {
+                errorMessage = "No school found with ID '$cleanId'. Ask your School Admin for the ID or create a new school."
+                return@launch
+            }
+
+            val isV1Migration = freshWs.teachersPanelVersion < 2L
+            val freshRemoteMember = if (!isV1Migration) {
+                freshWs.teachers.firstOrNull {
+                    it.phoneNumber.isNotBlank() && TeacherProfile.normalizePhone(it.phoneNumber) == cleanPhone
+                }
+            } else null
+
+            val key = accountKey(cleanId, cleanPhone)
+            val existingHash = when {
+                isV1Migration -> null
+                !freshRemoteMember?.passwordHash.isNullOrBlank() -> freshRemoteMember?.passwordHash
+                else -> credsPrefs.getString("${key}_hash", null)
+            }
+            val savedName = freshRemoteMember?.name?.ifBlank { null } ?: credsPrefs.getString("${key}_name", null)
+
+            if (isForgotPasswordFlow) {
+                if (!otpVerified) {
+                    errorMessage = "Verify the $otpDigits-digit OTP sent to $cleanPhone before resetting password."
+                    return@launch
+                }
+                val pwErr = validatePasswordPair(password, confirmPassword)
+                if (pwErr != null) {
+                    errorMessage = pwErr
+                    return@launch
+                }
+                val newHash = TeacherProfile.hashPassword(password)
+                isBusy = true
+                errorMessage = null
+                val res = repository.joinSchoolWorkspace(
+                    rawSchoolId = cleanId,
+                    teacherName = cleanTeacher,
+                    deviceId = deviceId,
+                    phoneNumber = cleanPhone,
+                    passwordHash = newHash,
+                    isPasswordReset = true
+                )
+                isBusy = false
+                res.onSuccess { enteredId ->
+                    saveDeviceCredentials(enteredId, cleanPhone, newHash, cleanTeacher)
+                    isForgotPasswordFlow = false
+                    resetOtpState()
+                    onEnteredSchool(enteredId, cleanTeacher, cleanPhone)
+                }.onFailure { err ->
+                    errorMessage = err.message ?: "Could not reset password."
+                }
+                return@launch
+            }
+
+            if (existingHash == null) {
+                // First-time sign up (or first v1.2 user upgrading Teachers Panel):
+                // Require New Password + Confirm Password + Phone OTP verification
+                val pwErr = validatePasswordPair(password, confirmPassword)
+                if (pwErr != null) {
+                    errorMessage = pwErr
+                    return@launch
+                }
+                if (!otpVerified) {
+                    errorMessage = "First-time sign up requires sending and verifying the $otpDigits-digit OTP on your phone."
+                    return@launch
+                }
+                val newHash = TeacherProfile.hashPassword(password)
+                isBusy = true
+                errorMessage = null
+                val res = repository.joinSchoolWorkspace(
+                    rawSchoolId = cleanId,
+                    teacherName = cleanTeacher,
+                    deviceId = deviceId,
+                    phoneNumber = cleanPhone,
+                    passwordHash = newHash,
+                    isPasswordReset = false
+                )
+                isBusy = false
+                res.onSuccess { enteredId ->
+                    saveDeviceCredentials(enteredId, cleanPhone, newHash, cleanTeacher)
+                    resetOtpState()
+                    onEnteredSchool(enteredId, cleanTeacher, cleanPhone)
+                }.onFailure { err ->
+                    errorMessage = err.message ?: "Could not open school."
+                }
+            } else {
+                // Returning sign-in on any device: verify single password, no duplicate account created
+                if (password.isBlank()) {
+                    errorMessage = "Enter your password to sign in."
+                    return@launch
+                }
+                if (!TeacherProfile.verifyPassword(password, existingHash)) {
+                    errorMessage = "Incorrect password for $cleanPhone. Tap 'Forgot Password?' if needed."
+                    return@launch
+                }
+                val enteredHash = TeacherProfile.hashPassword(password)
+                val effectiveName = cleanTeacher.ifBlank { savedName.orEmpty() }
+                isBusy = true
+                errorMessage = null
+                val res = repository.joinSchoolWorkspace(
+                    rawSchoolId = cleanId,
+                    teacherName = effectiveName,
+                    deviceId = deviceId,
+                    phoneNumber = cleanPhone,
+                    passwordHash = enteredHash,
+                    isPasswordReset = false
+                )
+                isBusy = false
+                res.onSuccess { enteredId ->
+                    saveDeviceCredentials(enteredId, cleanPhone, enteredHash, effectiveName)
+                    onEnteredSchool(enteredId, effectiveName, cleanPhone)
+                }.onFailure { err ->
+                    errorMessage = err.message ?: "Could not sign in."
+                }
+            }
+        }
+    }
+
+    val submitCreateAction: () -> Unit = {
+        scope.launch {
+            val cleanId = normalizeSchoolId(createSchoolId)
+            val cleanTeacher = teacherName.trim()
+            val cleanPhone = TeacherProfile.normalizePhone(phoneNumber)
+            if (cleanPhone.length < 10) {
+                errorMessage = "Enter a valid phone number for the School Admin account."
+                return@launch
+            }
+            val pwErr = validatePasswordPair(password, confirmPassword)
+            if (pwErr != null) {
+                errorMessage = pwErr
+                return@launch
+            }
+            if (!otpVerified) {
+                errorMessage = "Verify the $otpDigits-digit OTP sent to $cleanPhone to create your Admin account."
+                return@launch
+            }
+            val adminHash = TeacherProfile.hashPassword(password)
+            isBusy = true
+            errorMessage = null
+            val res = repository.createSchoolWorkspace(
+                rawSchoolId = cleanId,
+                schoolName = schoolName,
+                emisCode = emisCode,
+                upazilaDistrict = upazilaDistrict,
+                teacherName = cleanTeacher,
+                deviceId = deviceId,
+                phoneNumber = cleanPhone,
+                passwordHash = adminHash
+            )
+            isBusy = false
+            res.onSuccess { createdId ->
+                saveDeviceCredentials(createdId, cleanPhone, adminHash, cleanTeacher)
+                resetOtpState()
+                onEnteredSchool(createdId, cleanTeacher, cleanPhone)
+            }.onFailure { err ->
+                errorMessage = err.message ?: "Could not create school."
+            }
+        }
     }
 
     Scaffold(
@@ -286,129 +498,11 @@ fun SchoolEntryScreen(
                                 statusBanner = statusBanner,
                                 isBusy = isBusy,
                                 errorMessage = errorMessage,
-                                onSubmitJoin = {
-                                    scope.launch {
-                                        val cleanId = normalizeSchoolId(joinSchoolId)
-                                        val cleanTeacher = teacherName.trim()
-                                        val normPhone = TeacherProfile.normalizePhone(phoneNumber)
-                                        if (cleanId.length < 2 || cleanTeacher.isEmpty() || normPhone.length < 10) {
-                                            errorMessage = "Enter Teacher Name, School ID, and valid Phone Number."
-                                            return@launch
-                                        }
-                                        val key = accountKey(cleanId, normPhone)
-                                        val existingHash = credsPrefs.getString("${key}_hash", null)
-                                        val savedName = credsPrefs.getString("${key}_name", null)
-
-                                        if (isForgotPasswordFlow) {
-                                            if (!otpVerified) {
-                                                errorMessage = "Verify the OTP sent to $normPhone before setting a new password."
-                                                return@launch
-                                            }
-                                            val pwErr = validatePasswordPair(password, confirmPassword)
-                                            if (pwErr != null) {
-                                                errorMessage = pwErr
-                                                return@launch
-                                            }
-                                            isBusy = true
-                                            errorMessage = null
-                                            saveDeviceCredentials(cleanId, normPhone, password, cleanTeacher)
-                                            val res = repository.joinSchoolWorkspace(cleanId, cleanTeacher, deviceId)
-                                            isBusy = false
-                                            res.onSuccess { enteredId ->
-                                                isForgotPasswordFlow = false
-                                                resetOtpState()
-                                                onEnteredSchool(enteredId, cleanTeacher)
-                                            }.onFailure { err ->
-                                                errorMessage = err.message ?: "Could not reset password."
-                                            }
-                                            return@launch
-                                        }
-
-                                        if (existingHash == null) {
-                                            // First-time sign up on this device: require Confirm Password + OTP verification
-                                            val pwErr = validatePasswordPair(password, confirmPassword)
-                                            if (pwErr != null) {
-                                                errorMessage = pwErr
-                                                return@launch
-                                            }
-                                            if (!otpVerified) {
-                                                errorMessage = "First-time sign up requires sending and verifying the $otpDigits-digit OTP sent to your phone."
-                                                return@launch
-                                            }
-                                            isBusy = true
-                                            errorMessage = null
-                                            saveDeviceCredentials(cleanId, normPhone, password, cleanTeacher)
-                                            val res = repository.joinSchoolWorkspace(cleanId, cleanTeacher, deviceId)
-                                            isBusy = false
-                                            res.onSuccess { enteredId ->
-                                                resetOtpState()
-                                                onEnteredSchool(enteredId, cleanTeacher)
-                                            }.onFailure { err ->
-                                                errorMessage = err.message ?: "Could not open school."
-                                            }
-                                        } else {
-                                            // Returning login on this device: verify password against stored hash
-                                            if (password.isBlank()) {
-                                                errorMessage = "Enter your password to sign in."
-                                                return@launch
-                                            }
-                                            if (!TeacherProfile.verifyPassword(password, existingHash)) {
-                                                errorMessage = "Incorrect password for $normPhone. Use 'Forgot Password' if needed."
-                                                return@launch
-                                            }
-                                            isBusy = true
-                                            errorMessage = null
-                                            val effectiveName = cleanTeacher.ifBlank { savedName.orEmpty() }
-                                            saveDeviceCredentials(cleanId, normPhone, password, effectiveName)
-                                            val res = repository.joinSchoolWorkspace(cleanId, effectiveName, deviceId)
-                                            isBusy = false
-                                            res.onSuccess { enteredId ->
-                                                onEnteredSchool(enteredId, effectiveName)
-                                            }.onFailure { err ->
-                                                errorMessage = err.message ?: "Could not open school."
-                                            }
-                                        }
-                                    }
-                                },
-                                onSubmitCreate = {
-                                    scope.launch {
-                                        val cleanId = normalizeSchoolId(createSchoolId)
-                                        val cleanTeacher = teacherName.trim()
-                                        val normPhone = TeacherProfile.normalizePhone(phoneNumber)
-                                        if (normPhone.length < 10) {
-                                            errorMessage = "Enter a valid phone number for the School Admin account."
-                                            return@launch
-                                        }
-                                        val pwErr = validatePasswordPair(password, confirmPassword)
-                                        if (pwErr != null) {
-                                            errorMessage = pwErr
-                                            return@launch
-                                        }
-                                        if (!otpVerified) {
-                                            errorMessage = "Verify the $otpDigits-digit OTP sent to $normPhone to create your Admin account."
-                                            return@launch
-                                        }
-                                        isBusy = true
-                                        errorMessage = null
-                                        val res = repository.createSchoolWorkspace(
-                                            rawSchoolId = cleanId,
-                                            schoolName = schoolName,
-                                            emisCode = emisCode,
-                                            upazilaDistrict = upazilaDistrict,
-                                            teacherName = cleanTeacher,
-                                            deviceId = deviceId
-                                        )
-                                        isBusy = false
-                                        res.onSuccess { createdId ->
-                                            saveDeviceCredentials(createdId, normPhone, password, cleanTeacher)
-                                            resetOtpState()
-                                            onEnteredSchool(createdId, cleanTeacher)
-                                        }.onFailure { err ->
-                                            errorMessage = err.message ?: "Could not create school."
-                                        }
-                                    }
-                                },
+                                onSubmitJoin = submitJoinAction,
+                                onSubmitCreate = submitCreateAction,
                                 credsPrefs = credsPrefs,
+                                remotePasswordHash = remotePasswordHash,
+                                remoteWorkspaceNeedsV12Admin = lookedUpWorkspace != null && (lookedUpWorkspace?.teachersPanelVersion ?: 1L) < 2L,
                                 modifier = Modifier.weight(1.25f)
                             )
                         }
@@ -475,127 +569,11 @@ fun SchoolEntryScreen(
                                 statusBanner = statusBanner,
                                 isBusy = isBusy,
                                 errorMessage = errorMessage,
-                                onSubmitJoin = {
-                                    scope.launch {
-                                        val cleanId = normalizeSchoolId(joinSchoolId)
-                                        val cleanTeacher = teacherName.trim()
-                                        val normPhone = TeacherProfile.normalizePhone(phoneNumber)
-                                        if (cleanId.length < 2 || cleanTeacher.isEmpty() || normPhone.length < 10) {
-                                            errorMessage = "Enter Teacher Name, School ID, and valid Phone Number."
-                                            return@launch
-                                        }
-                                        val key = accountKey(cleanId, normPhone)
-                                        val existingHash = credsPrefs.getString("${key}_hash", null)
-                                        val savedName = credsPrefs.getString("${key}_name", null)
-
-                                        if (isForgotPasswordFlow) {
-                                            if (!otpVerified) {
-                                                errorMessage = "Verify the OTP sent to $normPhone before setting a new password."
-                                                return@launch
-                                            }
-                                            val pwErr = validatePasswordPair(password, confirmPassword)
-                                            if (pwErr != null) {
-                                                errorMessage = pwErr
-                                                return@launch
-                                            }
-                                            isBusy = true
-                                            errorMessage = null
-                                            saveDeviceCredentials(cleanId, normPhone, password, cleanTeacher)
-                                            val res = repository.joinSchoolWorkspace(cleanId, cleanTeacher, deviceId)
-                                            isBusy = false
-                                            res.onSuccess { enteredId ->
-                                                isForgotPasswordFlow = false
-                                                resetOtpState()
-                                                onEnteredSchool(enteredId, cleanTeacher)
-                                            }.onFailure { err ->
-                                                errorMessage = err.message ?: "Could not reset password."
-                                            }
-                                            return@launch
-                                        }
-
-                                        if (existingHash == null) {
-                                            val pwErr = validatePasswordPair(password, confirmPassword)
-                                            if (pwErr != null) {
-                                                errorMessage = pwErr
-                                                return@launch
-                                            }
-                                            if (!otpVerified) {
-                                                errorMessage = "First-time sign up requires sending and verifying the $otpDigits-digit OTP sent to your phone."
-                                                return@launch
-                                            }
-                                            isBusy = true
-                                            errorMessage = null
-                                            saveDeviceCredentials(cleanId, normPhone, password, cleanTeacher)
-                                            val res = repository.joinSchoolWorkspace(cleanId, cleanTeacher, deviceId)
-                                            isBusy = false
-                                            res.onSuccess { enteredId ->
-                                                resetOtpState()
-                                                onEnteredSchool(enteredId, cleanTeacher)
-                                            }.onFailure { err ->
-                                                errorMessage = err.message ?: "Could not open school."
-                                            }
-                                        } else {
-                                            if (password.isBlank()) {
-                                                errorMessage = "Enter your password to sign in."
-                                                return@launch
-                                            }
-                                            if (!TeacherProfile.verifyPassword(password, existingHash)) {
-                                                errorMessage = "Incorrect password for $normPhone. Use 'Forgot Password' if needed."
-                                                return@launch
-                                            }
-                                            isBusy = true
-                                            errorMessage = null
-                                            val effectiveName = cleanTeacher.ifBlank { savedName.orEmpty() }
-                                            saveDeviceCredentials(cleanId, normPhone, password, effectiveName)
-                                            val res = repository.joinSchoolWorkspace(cleanId, effectiveName, deviceId)
-                                            isBusy = false
-                                            res.onSuccess { enteredId ->
-                                                onEnteredSchool(enteredId, effectiveName)
-                                            }.onFailure { err ->
-                                                errorMessage = err.message ?: "Could not open school."
-                                            }
-                                        }
-                                    }
-                                },
-                                onSubmitCreate = {
-                                    scope.launch {
-                                        val cleanId = normalizeSchoolId(createSchoolId)
-                                        val cleanTeacher = teacherName.trim()
-                                        val normPhone = TeacherProfile.normalizePhone(phoneNumber)
-                                        if (normPhone.length < 10) {
-                                            errorMessage = "Enter a valid phone number for the School Admin account."
-                                            return@launch
-                                        }
-                                        val pwErr = validatePasswordPair(password, confirmPassword)
-                                        if (pwErr != null) {
-                                            errorMessage = pwErr
-                                            return@launch
-                                        }
-                                        if (!otpVerified) {
-                                            errorMessage = "Verify the $otpDigits-digit OTP sent to $normPhone to create your Admin account."
-                                            return@launch
-                                        }
-                                        isBusy = true
-                                        errorMessage = null
-                                        val res = repository.createSchoolWorkspace(
-                                            rawSchoolId = cleanId,
-                                            schoolName = schoolName,
-                                            emisCode = emisCode,
-                                            upazilaDistrict = upazilaDistrict,
-                                            teacherName = cleanTeacher,
-                                            deviceId = deviceId
-                                        )
-                                        isBusy = false
-                                        res.onSuccess { createdId ->
-                                            saveDeviceCredentials(createdId, normPhone, password, cleanTeacher)
-                                            resetOtpState()
-                                            onEnteredSchool(createdId, cleanTeacher)
-                                        }.onFailure { err ->
-                                            errorMessage = err.message ?: "Could not create school."
-                                        }
-                                    }
-                                },
+                                onSubmitJoin = submitJoinAction,
+                                onSubmitCreate = submitCreateAction,
                                 credsPrefs = credsPrefs,
+                                remotePasswordHash = remotePasswordHash,
+                                remoteWorkspaceNeedsV12Admin = lookedUpWorkspace != null && (lookedUpWorkspace?.teachersPanelVersion ?: 1L) < 2L,
                                 modifier = Modifier.fillMaxWidth()
                             )
                         }
@@ -690,7 +668,7 @@ private fun SchoolEntryHeroCard(modifier: Modifier = Modifier) {
                     )
                 }
                 Text(
-                    text = "• First-time users set a Password + Confirm Password and verify a 4- or 6-digit OTP on their phone number.\n• Returning logins use your phone number & password without creating duplicate accounts.\n• Multiple teachers can add/edit simultaneously; edits await Admin confirmation.",
+                    text = "• First-time users set New Password + Confirm Password and verify a 4- or 6-digit OTP on their phone.\n• Returning teachers sign in with Phone + Password from any device without creating duplicate accounts.\n• Updating from an older version automatically refreshes only the Teachers Panel (first teacher becomes Admin).",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSecondaryContainer
                 )
@@ -739,16 +717,24 @@ private fun SchoolEntryFormCard(
     onSubmitJoin: () -> Unit,
     onSubmitCreate: () -> Unit,
     credsPrefs: android.content.SharedPreferences,
+    remotePasswordHash: String?,
+    remoteWorkspaceNeedsV12Admin: Boolean,
     modifier: Modifier = Modifier
 ) {
     val activeSchoolId = if (mode == EntryMode.JOIN) joinSchoolId else createSchoolId
-    val hasExistingAccountOnDevice = remember(activeSchoolId, phoneNumber, credsPrefs) {
-        val cleanId = normalizeSchoolId(activeSchoolId)
-        val normPhone = TeacherProfile.normalizePhone(phoneNumber)
-        cleanId.length >= 2 && normPhone.length >= 10 &&
-            credsPrefs.getString("${accountKey(cleanId, normPhone)}_hash", null) != null
+    val hasExistingAccount = remember(activeSchoolId, phoneNumber, credsPrefs, remotePasswordHash, remoteWorkspaceNeedsV12Admin) {
+        if (remoteWorkspaceNeedsV12Admin) {
+            false
+        } else if (!remotePasswordHash.isNullOrBlank()) {
+            true
+        } else {
+            val cleanId = normalizeSchoolId(activeSchoolId)
+            val cleanPhone = TeacherProfile.normalizePhone(phoneNumber)
+            cleanId.length >= 2 && cleanPhone.length >= 10 &&
+                credsPrefs.getString("${accountKey(cleanId, cleanPhone)}_hash", null) != null
+        }
     }
-    val requiresNewPasswordAndOtp = mode == EntryMode.CREATE || isForgotPasswordFlow || !hasExistingAccountOnDevice
+    val requiresNewPasswordAndOtp = mode == EntryMode.CREATE || isForgotPasswordFlow || !hasExistingAccount
 
     Card(
         modifier = modifier,
@@ -796,6 +782,21 @@ private fun SchoolEntryFormCard(
                         .fillMaxWidth()
                         .testTag("entry_join_school_id_input")
                 )
+
+                if (remoteWorkspaceNeedsV12Admin) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.75f),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "App Update Notice: Teachers Panel refreshed for v1.2 — the first teacher to sign in becomes School Admin automatically (all student data preserved).",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+                }
 
                 if (recentSchools.isNotEmpty()) {
                     Text(
@@ -885,8 +886,11 @@ private fun SchoolEntryFormCard(
                 onValueChange = onTeacherNameChange,
                 label = {
                     Text(
-                        if (mode == EntryMode.CREATE) "Your Name (School Admin / Head Teacher)"
-                        else "Your Teacher Name"
+                        if (mode == EntryMode.CREATE || remoteWorkspaceNeedsV12Admin) {
+                            "Your Name (School Admin / Head Teacher)"
+                        } else {
+                            "Your Teacher Name"
+                        }
                     )
                 },
                 placeholder = { Text("e.g. Md. Rafiqul Islam") },
@@ -917,7 +921,7 @@ private fun SchoolEntryFormCard(
                     Text(
                         when {
                             isForgotPasswordFlow -> "New Password"
-                            requiresNewPasswordAndOtp -> "Create Password"
+                            requiresNewPasswordAndOtp -> "New Password"
                             else -> "Password"
                         }
                     )
@@ -1002,7 +1006,9 @@ private fun SchoolEntryFormCard(
                             )
                             OutlinedButton(
                                 onClick = onSendOtp,
-                                modifier = Modifier.height(52.dp)
+                                modifier = Modifier
+                                    .height(52.dp)
+                                    .testTag("entry_send_otp_button")
                             ) {
                                 Text(if (generatedOtp == null) "Send OTP" else "Resend")
                             }
@@ -1011,7 +1017,10 @@ private fun SchoolEntryFormCard(
                         if (generatedOtp != null && !otpVerified) {
                             Button(
                                 onClick = onVerifyOtp,
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .testTag("entry_confirm_otp_button")
                             ) {
                                 Text("Confirm OTP")
                             }
@@ -1034,8 +1043,8 @@ private fun SchoolEntryFormCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = if (hasExistingAccountOnDevice && !isForgotPasswordFlow) {
-                            "Account found on device — enter password."
+                        text = if (hasExistingAccount && !isForgotPasswordFlow) {
+                            "Account verified — enter your password."
                         } else if (isForgotPasswordFlow) {
                             "Resetting password via OTP."
                         } else {
@@ -1114,7 +1123,7 @@ private fun SchoolEntryFormCard(
                         text = when {
                             mode == EntryMode.CREATE -> "Create School & Start as Admin"
                             isForgotPasswordFlow -> "Set New Password & Enter"
-                            hasExistingAccountOnDevice -> "Sign In to School"
+                            hasExistingAccount -> "Sign In to School"
                             else -> "Create Account & Enter School"
                         }
                     )

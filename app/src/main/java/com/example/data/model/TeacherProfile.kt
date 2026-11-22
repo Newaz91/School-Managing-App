@@ -82,7 +82,9 @@ data class TeacherProfile(
 
         fun verifyPassword(plainPassword: String, storedHash: String): Boolean {
             if (storedHash.isBlank()) return false
-            return hashPassword(plainPassword) == storedHash
+            val computed = hashPassword(plainPassword).toByteArray(Charsets.UTF_8)
+            val expected = storedHash.trim().toByteArray(Charsets.UTF_8)
+            return MessageDigest.isEqual(computed, expected)
         }
     }
 }

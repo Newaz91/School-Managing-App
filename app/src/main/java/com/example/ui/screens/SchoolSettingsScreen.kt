@@ -28,6 +28,7 @@ import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.SwapHoriz
+import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Upgrade
 import androidx.compose.material3.AlertDialog
@@ -95,6 +96,7 @@ fun SchoolSettingsScreen(
     onBackupExcelToCloudShare: () -> Unit,
     onRestoreFromDeviceOrDrive: () -> Unit,
     onShareApp: () -> Unit,
+    onOpenPromotionManager: () -> Unit = {},
     onPromoteToNextYear: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -586,6 +588,18 @@ fun SchoolSettingsScreen(
                             Icon(Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
                             Text("Export / Share $selectedYear ($studentCount Students)")
+                        }
+                        FilledTonalButton(
+                            onClick = onOpenPromotionManager,
+                            enabled = studentCount > 0,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("settings_promotion_rolls_button")
+                        ) {
+                            Icon(Icons.Rounded.SwapVert, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Manage Promotion & Roll Positions")
                         }
                         if (isAdmin) {
                             OutlinedButton(
