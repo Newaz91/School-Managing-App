@@ -292,7 +292,7 @@ fun StudentAttendancePercentagePanel(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        text = "Update ${student.studentNameEn}'s cumulative present & working school days for ${student.academicYear}.",
+                        text = "Update ${student.primaryName()}'s cumulative present & working school days for ${student.academicYear}.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

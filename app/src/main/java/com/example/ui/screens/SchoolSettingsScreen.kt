@@ -29,6 +29,7 @@ import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.SwapVert
+import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Upgrade
 import androidx.compose.material3.AlertDialog
@@ -43,6 +44,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -69,6 +73,9 @@ import com.example.data.model.SubjectDefinition
 import com.example.data.model.TeacherRoles
 import com.example.ui.components.MarksheetCustomizerDialog
 import com.example.ui.components.YearSwitcherRow
+import com.example.ui.i18n.AppLanguage
+import com.example.ui.i18n.LocalAppLanguage
+import com.example.ui.i18n.LocalAppStrings
 import com.example.ui.theme.JetBrainsMonoFontFamily
 
 @Composable
@@ -83,6 +90,7 @@ fun SchoolSettingsScreen(
     subjects: List<SubjectDefinition>,
     customFieldsCount: Int,
     isSaving: Boolean,
+    onSelectLanguage: (AppLanguage) -> Unit = {},
     onUpdateSchoolDetails: (schoolName: String, emisCode: String, upazilaDistrict: String, defaultAcademicYear: Long) -> Unit,
     onSaveExamConfigs: (List<ExamTermConfig>, () -> Unit) -> Unit,
     onTransferAdmin: (newAdminDeviceId: String, newAdminName: String) -> Unit,
@@ -100,6 +108,8 @@ fun SchoolSettingsScreen(
     onPromoteToNextYear: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val strings = LocalAppStrings.current
+    val currentLanguage = LocalAppLanguage.current
     val clipboard = LocalClipboardManager.current
     var schoolName by remember { mutableStateOf(workspace?.schoolName ?: "") }
     var emisCode by remember { mutableStateOf(workspace?.emisCode ?: "") }
@@ -135,6 +145,57 @@ fun SchoolSettingsScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // 0. Language Selector (English / বাংলা)
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                    ),
+                    shape = RoundedCornerShape(20.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Translate,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = strings.languageSettingTitle,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Text(
+                            text = strings.languageSettingDesc,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                            AppLanguage.entries.forEachIndexed { idx, lang ->
+                                SegmentedButton(
+                                    selected = currentLanguage == lang,
+                                    onClick = { onSelectLanguage(lang) },
+                                    shape = SegmentedButtonDefaults.itemShape(
+                                        index = idx,
+                                        count = AppLanguage.entries.size
+                                    ),
+                                    modifier = Modifier.testTag("settings_lang_${lang.code}")
+                                ) {
+                                    Text(lang.displayLabel)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // 1. Unique School ID & Shared Teacher Roster Card
             item {
                 Card(
@@ -406,7 +467,7 @@ fun SchoolSettingsScreen(
                         ) {
                             Icon(Icons.Rounded.Restore, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text("Restore Data from Device Excel / Google Drive")
+                            Text(strings.menuRestoreExcel)
                         }
 
                         TextButton(

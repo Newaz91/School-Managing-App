@@ -48,7 +48,7 @@
         "createdAt": { "type": "string" },
         "updatedAt": { "type": "string" }
       },
-      "required": ["schoolId", "studentNameEn", "rollNumber", "classLevel", "academicYear", "createdAt", "updatedAt"]
+      "required": ["schoolId", "studentNameBn", "rollNumber", "classLevel", "academicYear", "createdAt", "updatedAt"]
     },
     "AttendanceLog": {
       "description": "Class-separated daily attendance sheet used to compute weekly, monthly, and yearly attendance views",

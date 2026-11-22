@@ -24,7 +24,41 @@ data class BackupParseResult(
     val students: List<StudentRecord>,
     val subjectsToUpsert: List<SubjectDefinition>,
     val customFieldsToUpsert: List<CustomFieldDef>,
-    val formatLabel: String
+    val formatLabel: String,
+    val replaceMatchedExisting: Boolean = true
+)
+
+enum class ExcelColumnRole(val label: String) {
+    IGNORE("Skip / Ignore"),
+    STUDENT_NAME_EN("Student Name (English)"),
+    STUDENT_NAME_BN("Student Name (Bangla)"),
+    ROLL_NUMBER("Roll Number"),
+    CLASS_LEVEL("Class Name"),
+    SECTION("Section"),
+    ACADEMIC_YEAR("Academic Year"),
+    FATHER_NAME("Father's Name"),
+    MOTHER_NAME("Mother's Name"),
+    DATE_OF_BIRTH("Date of Birth"),
+    GUARDIAN_PHONE("Phone Number"),
+    ADDRESS("Address"),
+    WORKING_DAYS("Working Days"),
+    DAYS_PRESENT("Days Present"),
+    PROMOTION_STATUS("Promotion Status"),
+    EXAM_SUBJECT_MARK("Exam Mark (Subject)"),
+    CUSTOM_TEXT_FIELD("Flexible Field")
+}
+
+data class RawWorksheetData(
+    val sheetName: String,
+    val rows: List<List<String>>,
+    val suggestedHeaderRowIndex: Int
+)
+
+data class RawWorkbookPreview(
+    val formatLabel: String,
+    val sheets: List<RawWorksheetData>,
+    val isNativeMySchoolBackup: Boolean,
+    val nativeBackupResult: BackupParseResult? = null
 )
 
 object ExcelBackupManager {
@@ -248,6 +282,382 @@ object ExcelBackupManager {
 
     // ─────────────────────────── RESTORE FROM EXCEL (.XLSX) OR CSV ───────────────────────────
 
+    fun parseRawWorkbookFromUri(
+        context: Context,
+        uri: Uri,
+        defaultAcademicYear: Int,
+        existingSubjects: List<SubjectDefinition>,
+        existingCustomFields: List<CustomFieldDef>
+    ): RawWorkbookPreview {
+        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            ?: throw IllegalStateException("Could not open selected Excel / CSV file.")
+        if (bytes.isEmpty()) throw IllegalStateException("The selected file is empty.")
+
+        val isZipXlsx = bytes.size >= 4 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte()
+        if (!isZipXlsx) {
+            val csvText = bytes.toString(Charsets.UTF_8).removePrefix("\uFEFF")
+            val rows = parseCsvRows(csvText)
+            if (rows.isEmpty()) throw IllegalStateException("Selected CSV file contains no rows.")
+            val headerIdx = detectHeaderRowIndex(rows)
+            val nativeTry = runCatching {
+                buildResultFromTables(
+                    studentRows = rows.drop(headerIdx),
+                    subjectRows = emptyList(),
+                    categoryRows = emptyList(),
+                    defaultAcademicYear = defaultAcademicYear,
+                    existingSubjects = existingSubjects,
+                    existingCustomFields = existingCustomFields,
+                    formatLabel = "CSV / Google Sheets"
+                )
+            }.getOrNull()
+            return RawWorkbookPreview(
+                formatLabel = "CSV / Google Sheets",
+                sheets = listOf(RawWorksheetData("Sheet1", rows, headerIdx)),
+                isNativeMySchoolBackup = nativeTry != null && isNativeHeaderRow(rows.getOrNull(headerIdx).orEmpty()),
+                nativeBackupResult = nativeTry
+            )
+        }
+
+        val entries = extractXlsxXmlEntries(bytes)
+        val sharedStrings = entries["xl/sharedStrings.xml"]?.let { parseSharedStrings(it) } ?: emptyList()
+        val sheetEntries = resolveOrderedSheets(entries)
+        if (sheetEntries.isEmpty()) {
+            throw IllegalStateException("No worksheets found inside the selected Excel (.xlsx) file.")
+        }
+
+        val rawSheets = sheetEntries.map { (name, xml) ->
+            val parsedRows = parseWorksheetXml(xml, sharedStrings)
+            RawWorksheetData(
+                sheetName = name,
+                rows = parsedRows,
+                suggestedHeaderRowIndex = detectHeaderRowIndex(parsedRows)
+            )
+        }.filter { it.rows.isNotEmpty() }
+
+        if (rawSheets.isEmpty()) {
+            throw IllegalStateException("The selected Excel (.xlsx) workbook has no data rows.")
+        }
+
+        val studentsSheet = rawSheets.firstOrNull { it.sheetName.equals("Students", ignoreCase = true) }
+        val subjectsSheet = rawSheets.firstOrNull { it.sheetName.equals("Subjects", ignoreCase = true) }
+        val categorySheet = rawSheets.firstOrNull { it.sheetName.equals("CategoryFields", ignoreCase = true) }
+
+        val isNative = studentsSheet != null && (subjectsSheet != null || isNativeHeaderRow(studentsSheet.rows.firstOrNull().orEmpty()))
+        val nativeTry = runCatching {
+            val targetStu = studentsSheet ?: rawSheets.first()
+            buildResultFromTables(
+                studentRows = targetStu.rows.drop(targetStu.suggestedHeaderRowIndex),
+                subjectRows = subjectsSheet?.rows.orEmpty(),
+                categoryRows = categorySheet?.rows.orEmpty(),
+                defaultAcademicYear = defaultAcademicYear,
+                existingSubjects = existingSubjects,
+                existingCustomFields = existingCustomFields,
+                formatLabel = "Excel Workbook (.xlsx)"
+            )
+        }.getOrNull()
+
+        return RawWorkbookPreview(
+            formatLabel = "Excel Workbook (.xlsx)",
+            sheets = rawSheets,
+            isNativeMySchoolBackup = isNative && nativeTry != null,
+            nativeBackupResult = if (isNative) nativeTry else null
+        )
+    }
+
+    private fun extractXlsxXmlEntries(bytes: ByteArray): Map<String, String> {
+        val entries = mutableMapOf<String, String>()
+        ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
+            var entry = zip.nextEntry
+            while (entry != null) {
+                if (!entry.isDirectory &&
+                    (entry.name.endsWith(".xml", ignoreCase = true) || entry.name.endsWith(".rels", ignoreCase = true))
+                ) {
+                    val normalizedKey = entry.name.trimStart('/')
+                    entries[normalizedKey] = zip.readBytes().toString(Charsets.UTF_8)
+                }
+                entry = zip.nextEntry
+            }
+        }
+        return entries
+    }
+
+    private fun resolveOrderedSheets(entries: Map<String, String>): List<Pair<String, String>> {
+        val relTargets = parseWorkbookRels(entries["xl/_rels/workbook.xml.rels"])
+        val sheetMeta = parseWorkbookSheetRefs(entries["xl/workbook.xml"])
+        val resolved = mutableListOf<Pair<String, String>>()
+
+        if (sheetMeta.isNotEmpty()) {
+            sheetMeta.forEachIndexed { idx, (name, rId, sheetId) ->
+                val targetFromRel = relTargets[rId]
+                val candidates = listOfNotNull(
+                    targetFromRel,
+                    targetFromRel?.let { if (it.startsWith("xl/")) it else "xl/$it" },
+                    "xl/worksheets/sheet${idx + 1}.xml",
+                    "xl/worksheets/sheet$sheetId.xml"
+                )
+                val xml = candidates.firstNotNullOfOrNull { entries[it] }
+                if (xml != null) {
+                    resolved += (name.ifBlank { "Sheet${idx + 1}" } to xml)
+                }
+            }
+        }
+
+        if (resolved.isEmpty()) {
+            entries.keys
+                .filter { it.startsWith("xl/worksheets/sheet") && it.endsWith(".xml") }
+                .sortedBy { name ->
+                    name.removePrefix("xl/worksheets/sheet").removeSuffix(".xml").toIntOrNull() ?: 99
+                }
+                .forEachIndexed { idx, key ->
+                    val xml = entries[key]
+                    if (xml != null) {
+                        resolved += ("Sheet${idx + 1}" to xml)
+                    }
+                }
+        }
+        return resolved
+    }
+
+    fun detectHeaderRowIndex(rows: List<List<String>>): Int {
+        if (rows.isEmpty()) return 0
+        val keywords = listOf("name", "roll", "class", "student", "father", "phone", "mobile", "নাম", "রোল", "শ্রেণি", "marks", "bangla", "english", "math")
+        val limit = minOf(rows.size, 10)
+        var bestIdx = 0
+        var bestScore = -1
+        for (i in 0 until limit) {
+            val row = rows[i]
+            val nonEmpty = row.count { it.isNotBlank() }
+            if (nonEmpty < 2 && rows.size > 1) continue
+            val keywordHits = row.count { cell ->
+                val low = cell.trim().lowercase()
+                keywords.any { kw -> low.contains(kw) }
+            }
+            val score = keywordHits * 10 + nonEmpty
+            if (score > bestScore) {
+                bestScore = score
+                bestIdx = i
+            }
+        }
+        return bestIdx
+    }
+
+    private fun isNativeHeaderRow(headers: List<String>): Boolean {
+        val low = headers.map { it.trim().lowercase() }
+        return low.contains("student name (en)") || low.contains("exam marks json") || low.contains("notes json")
+    }
+
+    fun guessColumnRole(header: String): ExcelColumnRole {
+        val h = header.trim().lowercase()
+        return when {
+            h.isBlank() || h == "sl" || h == "sl." || h == "s/n" || h.startsWith("sl no") -> ExcelColumnRole.IGNORE
+            h.contains("student name (bn)") || h.contains("bangla name") || h.contains("বাংলা নাম") || h.contains("শিক্ষার্থীর নাম") || h == "নাম" -> ExcelColumnRole.STUDENT_NAME_BN
+            h.contains("student name") || h == "name" || h.contains("full name") -> ExcelColumnRole.STUDENT_NAME_EN
+            h.contains("roll") || h.contains("রোল") -> ExcelColumnRole.ROLL_NUMBER
+            h == "class" || h.contains("class name") || h.contains("class level") || h.contains("শ্রেণি") || h.contains("grade") -> ExcelColumnRole.CLASS_LEVEL
+            h.contains("section") || h.contains("শাখা") -> ExcelColumnRole.SECTION
+            h.contains("year") || h.contains("শিক্ষাবর্ষ") -> ExcelColumnRole.ACADEMIC_YEAR
+            h.contains("father") || h.contains("পিতা") -> ExcelColumnRole.FATHER_NAME
+            h.contains("mother") || h.contains("মাতা") -> ExcelColumnRole.MOTHER_NAME
+            h.contains("dob") || h.contains("birth") || h.contains("জন্ম") -> ExcelColumnRole.DATE_OF_BIRTH
+            h.contains("phone") || h.contains("mobile") || h.contains("contact") || h.contains("মোবাইল") -> ExcelColumnRole.GUARDIAN_PHONE
+            h.contains("address") || h.contains("village") || h.contains("ঠিকানা") -> ExcelColumnRole.ADDRESS
+            h.contains("working") || h.contains("total days") -> ExcelColumnRole.WORKING_DAYS
+            h.contains("present") -> ExcelColumnRole.DAYS_PRESENT
+            h.contains("promotion") -> ExcelColumnRole.PROMOTION_STATUS
+            h.contains("attendance %") || h.contains("overall") || h.contains("json") || h.contains("photo") -> ExcelColumnRole.IGNORE
+            h.contains("bangla") || h.contains("english") || h.contains("math") || h.contains("science") ||
+                h.contains("religion") || h.contains("bgs") || h.contains("ict") || h.contains("mark") ||
+                h.contains("বাংলা") || h.contains("ইংরেজি") || h.contains("গণিত") || h.contains("বিজ্ঞান") -> ExcelColumnRole.EXAM_SUBJECT_MARK
+            else -> ExcelColumnRole.CUSTOM_TEXT_FIELD
+        }
+    }
+
+    fun buildBackupResultFromMapping(
+        sheet: RawWorksheetData,
+        headerRowIndex: Int,
+        columnMappings: Map<Int, ExcelColumnRole>,
+        columnHeaders: List<String>,
+        defaultClassLevel: String,
+        defaultAcademicYear: Int,
+        targetExamId: String,
+        existingCustomFields: List<CustomFieldDef>,
+        updateMatchedExisting: Boolean,
+        formatLabel: String
+    ): BackupParseResult {
+        val dataRows = sheet.rows.drop((headerRowIndex + 1).coerceAtLeast(0))
+        if (dataRows.isEmpty()) {
+            throw IllegalStateException("No student rows found below the header row.")
+        }
+
+        val customCols = columnMappings.entries
+            .filter { it.value == ExcelColumnRole.CUSTOM_TEXT_FIELD }
+            .map { (colIdx, _) ->
+                val colTitle = columnHeaders.getOrNull(colIdx)?.trim().orEmpty().ifBlank { "Column ${colIdx + 1}" }
+                val existing = existingCustomFields.firstOrNull { it.label.equals(colTitle, ignoreCase = true) }
+                val cf = existing ?: CustomFieldDef(
+                    id = generateShortId("cf"),
+                    category = "Imported Excel",
+                    label = colTitle,
+                    fieldType = CustomFieldTypes.TEXT,
+                    resetsYearly = false
+                )
+                Triple(colIdx, cf, existing == null)
+            }
+
+        val newCustomFields = customCols.filter { it.third }.map { it.second }
+
+        val students = dataRows.mapIndexedNotNull { rowOffset, row ->
+            fun firstForRole(role: ExcelColumnRole): String {
+                val idx = columnMappings.entries.firstOrNull { it.value == role }?.key ?: return ""
+                return row.getOrNull(idx)?.trim().orEmpty()
+            }
+
+            val nameBn = firstForRole(ExcelColumnRole.STUDENT_NAME_BN)
+            val nameEn = firstForRole(ExcelColumnRole.STUDENT_NAME_EN)
+            if (nameBn.isBlank() && nameEn.isBlank()) return@mapIndexedNotNull null
+
+            val rawClass = firstForRole(ExcelColumnRole.CLASS_LEVEL).ifBlank { defaultClassLevel }
+            val resolvedClass = normalizeClassNameFlexible(rawClass, defaultClassLevel)
+            val roll = firstForRole(ExcelColumnRole.ROLL_NUMBER).ifBlank { (rowOffset + 1).toString().padStart(2, '0') }
+            val year = firstForRole(ExcelColumnRole.ACADEMIC_YEAR).filter { it.isDigit() }.toLongOrNull()
+                ?.coerceIn(2020L, 2050L) ?: defaultAcademicYear.toLong()
+
+            val customVals = mutableMapOf<String, String>()
+            customCols.forEach { (colIdx, cf, _) ->
+                val v = row.getOrNull(colIdx)?.trim().orEmpty()
+                if (v.isNotBlank()) {
+                    customVals[cf.id] = v.take(300)
+                }
+            }
+
+            val examVals = mutableMapOf<String, String>()
+            columnMappings.entries
+                .filter { it.value == ExcelColumnRole.EXAM_SUBJECT_MARK }
+                .forEach { (colIdx, _) ->
+                    val rawVal = row.getOrNull(colIdx)?.trim().orEmpty()
+                    val numeric = rawVal.toDoubleOrNull()
+                    if (numeric != null && targetExamId.isNotBlank()) {
+                        val headerName = columnHeaders.getOrNull(colIdx)?.trim().orEmpty().ifBlank { "sub_$colIdx" }
+                        val cleanSubId = "imp_${headerName.lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_').take(24)}"
+                        examVals["${targetExamId}__$cleanSubId"] = ExamResultCalculatorCompat.cleanMarkString(numeric)
+                    }
+                }
+
+            StudentRecord(
+                studentNameEn = nameEn.take(120),
+                studentNameBn = nameBn.take(120),
+                fatherNameEn = firstForRole(ExcelColumnRole.FATHER_NAME).take(120),
+                motherNameEn = firstForRole(ExcelColumnRole.MOTHER_NAME).take(120),
+                dateOfBirth = firstForRole(ExcelColumnRole.DATE_OF_BIRTH).take(30),
+                guardianPhone = firstForRole(ExcelColumnRole.GUARDIAN_PHONE).take(30),
+                address = firstForRole(ExcelColumnRole.ADDRESS).take(250),
+                rollNumber = roll.take(20),
+                classLevel = resolvedClass.take(40),
+                section = firstForRole(ExcelColumnRole.SECTION).ifBlank { "A" }.take(30),
+                academicYear = year,
+                totalSchoolDays = firstForRole(ExcelColumnRole.WORKING_DAYS).filter { it.isDigit() }.toLongOrNull()?.coerceIn(0L, 366L) ?: 0L,
+                daysPresent = firstForRole(ExcelColumnRole.DAYS_PRESENT).filter { it.isDigit() }.toLongOrNull()?.coerceIn(0L, 366L) ?: 0L,
+                promotionStatus = firstForRole(ExcelColumnRole.PROMOTION_STATUS).ifBlank { "Studying" }.take(40),
+                customValues = customVals,
+                examResults = examVals
+            )
+        }
+
+        if (students.isEmpty()) {
+            throw IllegalStateException("No valid student rows found. Make sure a column is mapped to Student Name.")
+        }
+
+        return BackupParseResult(
+            students = students,
+            subjectsToUpsert = emptyList(),
+            customFieldsToUpsert = newCustomFields,
+            formatLabel = formatLabel,
+            replaceMatchedExisting = updateMatchedExisting
+        )
+    }
+
+    /**
+     * Quick single-subject marks importer for Class-Wise Subject Marks Sheet.
+     * Matches rows in any .xlsx or .csv file against classStudents by Roll Number or Student Name.
+     */
+    fun parseSubjectMarksFromUri(
+        context: Context,
+        uri: Uri,
+        classStudents: List<StudentRecord>,
+        subjectName: String
+    ): Map<String, String> {
+        val raw = parseRawWorkbookFromUri(
+            context = context,
+            uri = uri,
+            defaultAcademicYear = 2026,
+            existingSubjects = emptyList(),
+            existingCustomFields = emptyList()
+        )
+        val sheet = raw.sheets.firstOrNull() ?: throw IllegalStateException("No rows found.")
+        val headerIdx = sheet.suggestedHeaderRowIndex
+        val headers = sheet.rows.getOrNull(headerIdx).orEmpty().map { it.trim().lowercase() }
+        val dataRows = sheet.rows.drop(headerIdx + 1)
+
+        val rollCol = headers.indexOfFirst { it.contains("roll") || it.contains("রোল") }
+        val nameCol = headers.indexOfFirst { it.contains("name") || it.contains("নাম") }
+        val subCol = headers.indexOfFirst { it.contains(subjectName.lowercase()) }.takeIf { it >= 0 }
+            ?: headers.indexOfFirst { it.contains("mark") || it.contains("obtain") || it.contains("score") || it.contains("নম্বর") }
+                .takeIf { it >= 0 }
+            ?: headers.indexOfLast { idxHeader ->
+                idxHeader.isNotBlank() && !idxHeader.contains("roll") && !idxHeader.contains("name") && !idxHeader.contains("class")
+            }.takeIf { it >= 0 }
+            ?: 1
+
+        val result = mutableMapOf<String, String>()
+        val byRoll = classStudents.associateBy { it.rollNumber.trim().lowercase() }
+        val byRollNum = classStudents.associateBy { it.rollSortKey() }
+        val byName = buildMap<String, StudentRecord> {
+            classStudents.forEach { s ->
+                if (s.studentNameEn.isNotBlank()) put(s.studentNameEn.trim().lowercase(), s)
+                if (s.studentNameBn.isNotBlank()) put(s.studentNameBn.trim().lowercase(), s)
+            }
+        }
+
+        dataRows.forEach { row ->
+            val rawRoll = if (rollCol >= 0) row.getOrNull(rollCol)?.trim().orEmpty() else ""
+            val rawName = if (nameCol >= 0) row.getOrNull(nameCol)?.trim().orEmpty() else ""
+            val rawMark = row.getOrNull(subCol)?.trim().orEmpty()
+            val numVal = rawMark.toDoubleOrNull() ?: return@forEach
+
+            val matched = when {
+                rawRoll.isNotBlank() -> byRoll[rawRoll.lowercase()]
+                    ?: rawRoll.filter { it.isDigit() }.toIntOrNull()?.let { byRollNum[it] }
+                rawName.isNotBlank() -> byName[rawName.lowercase()]
+                else -> null
+            } ?: if (rawName.isNotBlank()) byName[rawName.lowercase()] else null
+
+            if (matched != null && matched.id.isNotBlank()) {
+                result[matched.id] = ExamResultCalculatorCompat.cleanMarkString(numVal)
+            }
+        }
+        return result
+    }
+
+    private fun normalizeClassNameFlexible(raw: String, fallback: String): String {
+        val clean = raw.trim()
+        if (clean.isBlank()) return fallback
+        ClassLevels.ALL.firstOrNull { it.equals(clean, ignoreCase = true) }?.let { return it }
+        val digits = clean.filter { it.isDigit() }.toIntOrNull()
+        return when {
+            clean.contains("pre", ignoreCase = true) || clean.contains("প্রাক") || digits == 0 -> "Pre-Primary"
+            digits in 1..5 -> "Class $digits"
+            else -> clean
+        }
+    }
+
+    private object ExamResultCalculatorCompat {
+        fun cleanMarkString(value: Double): String {
+            val rounded = kotlin.math.round(value)
+            return if (kotlin.math.abs(value - rounded) < 0.01) rounded.toInt().toString()
+            else String.format(java.util.Locale.US, "%.1f", value)
+        }
+    }
+
     fun parseBackupFromUri(
         context: Context,
         uri: Uri,
@@ -255,85 +665,31 @@ object ExcelBackupManager {
         existingSubjects: List<SubjectDefinition>,
         existingCustomFields: List<CustomFieldDef>
     ): BackupParseResult {
-        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-            ?: throw IllegalStateException("Could not open selected backup file.")
-        if (bytes.isEmpty()) throw IllegalStateException("The selected file is empty.")
-
-        val isZipXlsx = bytes.size >= 4 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte()
-        return if (isZipXlsx) {
-            parseXlsxBytes(bytes, defaultAcademicYear, existingSubjects, existingCustomFields)
-        } else {
-            val csvText = bytes.toString(Charsets.UTF_8).removePrefix("\uFEFF")
-            val rows = parseCsvRows(csvText)
-            buildResultFromTables(
-                studentRows = rows,
-                subjectRows = emptyList(),
-                categoryRows = emptyList(),
-                defaultAcademicYear = defaultAcademicYear,
-                existingSubjects = existingSubjects,
-                existingCustomFields = existingCustomFields,
-                formatLabel = "CSV / Google Sheets"
-            )
-        }
+        val preview = parseRawWorkbookFromUri(
+            context = context,
+            uri = uri,
+            defaultAcademicYear = defaultAcademicYear,
+            existingSubjects = existingSubjects,
+            existingCustomFields = existingCustomFields
+        )
+        return preview.nativeBackupResult ?: parseLegacyFallback(preview, defaultAcademicYear, existingSubjects, existingCustomFields)
     }
 
-    private fun parseXlsxBytes(
-        bytes: ByteArray,
+    private fun parseLegacyFallback(
+        preview: RawWorkbookPreview,
         defaultAcademicYear: Int,
         existingSubjects: List<SubjectDefinition>,
         existingCustomFields: List<CustomFieldDef>
     ): BackupParseResult {
-        val entries = mutableMapOf<String, String>()
-        ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
-            var entry = zip.nextEntry
-            while (entry != null) {
-                if (!entry.isDirectory && entry.name.endsWith(".xml", ignoreCase = true)) {
-                    entries[entry.name] = zip.readBytes().toString(Charsets.UTF_8)
-                }
-                entry = zip.nextEntry
-            }
-        }
-
-        val sharedStrings = entries["xl/sharedStrings.xml"]?.let { parseSharedStrings(it) } ?: emptyList()
-        val sheetNamesByIndex = parseWorkbookSheetNames(entries["xl/workbook.xml"])
-
-        val worksheetKeys = entries.keys
-            .filter { it.startsWith("xl/worksheets/sheet") && it.endsWith(".xml") }
-            .sortedBy { name ->
-                name.removePrefix("xl/worksheets/sheet").removeSuffix(".xml").toIntOrNull() ?: 99
-            }
-
-        if (worksheetKeys.isEmpty()) {
-            throw IllegalStateException("No worksheets found inside Excel (.xlsx) file.")
-        }
-
-        var studentRows: List<List<String>> = emptyList()
-        var subjectRows: List<List<String>> = emptyList()
-        var categoryRows: List<List<String>> = emptyList()
-
-        worksheetKeys.forEachIndexed { idx, key ->
-            val sheetNum = key.removePrefix("xl/worksheets/sheet").removeSuffix(".xml").toIntOrNull() ?: (idx + 1)
-            val sheetName = sheetNamesByIndex[sheetNum]?.lowercase().orEmpty()
-            val parsedRows = parseWorksheetXml(entries[key].orEmpty(), sharedStrings)
-            when {
-                sheetName == "subjects" -> subjectRows = parsedRows
-                sheetName == "categoryfields" -> categoryRows = parsedRows
-                sheetName == "students" || studentRows.isEmpty() -> {
-                    if (studentRows.isEmpty() || sheetName == "students") {
-                        studentRows = parsedRows
-                    }
-                }
-            }
-        }
-
+        val firstSheet = preview.sheets.first()
         return buildResultFromTables(
-            studentRows = studentRows,
-            subjectRows = subjectRows,
-            categoryRows = categoryRows,
+            studentRows = firstSheet.rows.drop(firstSheet.suggestedHeaderRowIndex),
+            subjectRows = emptyList(),
+            categoryRows = emptyList(),
             defaultAcademicYear = defaultAcademicYear,
             existingSubjects = existingSubjects,
             existingCustomFields = existingCustomFields,
-            formatLabel = "Excel Workbook (.xlsx)"
+            formatLabel = preview.formatLabel
         )
     }
 
@@ -510,7 +866,8 @@ object ExcelBackupManager {
             fun cell(colIdx: Int): String = if (colIdx >= 0) row.getOrNull(colIdx)?.trim().orEmpty() else ""
 
             val nameEn = cell(nameEnCol)
-            if (nameEn.isBlank()) return@mapNotNull null
+            val nameBn = cell(nameBnCol)
+            if (nameEn.isBlank() && nameBn.isBlank()) return@mapNotNull null
 
             val rawClass = cell(classCol).ifBlank { "Class 1" }
             val resolvedClass = ClassLevels.ALL.firstOrNull { it.equals(rawClass, ignoreCase = true) } ?: rawClass
@@ -572,7 +929,7 @@ object ExcelBackupManager {
 
             StudentRecord(
                 studentNameEn = nameEn.take(120),
-                studentNameBn = cell(nameBnCol).take(120),
+                studentNameBn = nameBn.take(120),
                 fatherNameEn = cell(fatherCol).take(120),
                 motherNameEn = cell(motherCol).take(120),
                 dateOfBirth = cell(dobCol).take(30),
@@ -594,7 +951,7 @@ object ExcelBackupManager {
         }
 
         if (parsedStudents.isEmpty()) {
-            throw IllegalStateException("No valid student rows found. Ensure a 'Student Name (EN)' or 'Name' column exists.")
+            throw IllegalStateException("No valid student rows found. Ensure a 'Student Name (BN)' or 'Student Name' column exists.")
         }
 
         return BackupParseResult(
@@ -607,19 +964,48 @@ object ExcelBackupManager {
 
     // ─────────────────────────── XML & CSV HELPERS ───────────────────────────
 
-    private fun parseWorkbookSheetNames(workbookXml: String?): Map<Int, String> {
-        if (workbookXml.isNullOrBlank()) return emptyMap()
-        val result = mutableMapOf<Int, String>()
+    private fun parseWorkbookRels(relsXml: String?): Map<String, String> {
+        if (relsXml.isNullOrBlank()) return emptyMap()
+        val map = mutableMapOf<String, String>()
+        try {
+            val parser = Xml.newPullParser()
+            parser.setInput(StringReader(relsXml))
+            var event = parser.eventType
+            while (event != XmlPullParser.END_DOCUMENT) {
+                if (event == XmlPullParser.START_TAG && parser.name.endsWith("Relationship")) {
+                    val id = parser.getAttributeValue(null, "Id").orEmpty()
+                    val target = parser.getAttributeValue(null, "Target").orEmpty().trimStart('/')
+                    if (id.isNotBlank() && target.isNotBlank()) {
+                        map[id] = if (target.startsWith("xl/")) target else "xl/$target"
+                    }
+                }
+                event = parser.next()
+            }
+        } catch (_: Exception) {
+        }
+        return map
+    }
+
+    private fun parseWorkbookSheetRefs(workbookXml: String?): List<Triple<String, String, Int>> {
+        if (workbookXml.isNullOrBlank()) return emptyList()
+        val result = mutableListOf<Triple<String, String, Int>>()
         try {
             val parser = Xml.newPullParser()
             parser.setInput(StringReader(workbookXml))
             var event = parser.eventType
             var idx = 1
             while (event != XmlPullParser.END_DOCUMENT) {
-                if (event == XmlPullParser.START_TAG && parser.name == "sheet") {
+                if (event == XmlPullParser.START_TAG && (parser.name == "sheet" || parser.name.endsWith(":sheet"))) {
                     val name = parser.getAttributeValue(null, "name").orEmpty()
                     val sheetId = parser.getAttributeValue(null, "sheetId")?.toIntOrNull() ?: idx
-                    result[idx] = name.ifBlank { "Sheet$sheetId" }
+                    var rId = ""
+                    for (i in 0 until parser.attributeCount) {
+                        val attrName = parser.getAttributeName(i).orEmpty()
+                        if (attrName == "id" || attrName == "r:id" || attrName.endsWith(":id")) {
+                            rId = parser.getAttributeValue(i).orEmpty()
+                        }
+                    }
+                    result += Triple(name.ifBlank { "Sheet$sheetId" }, rId, sheetId)
                     idx++
                 }
                 event = parser.next()

@@ -76,6 +76,21 @@ data class StudentRecord(
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
+    fun primaryName(): String = studentNameBn.trim().ifBlank { studentNameEn.trim() }
+
+    fun secondaryName(): String {
+        val bn = studentNameBn.trim()
+        val en = studentNameEn.trim()
+        return if (bn.isNotBlank() && en.isNotBlank() && !en.equals(bn, ignoreCase = false)) en else ""
+    }
+
+    fun combinedDisplayName(): String {
+        val primary = primaryName()
+        if (primary.isBlank()) return "—"
+        val secondary = secondaryName()
+        return if (secondary.isNotBlank()) "$primary ($secondary)" else primary
+    }
+
     fun effectiveAddress(): String {
         if (address.isNotBlank()) return address
         return listOf(villageWard, unionMunicipality, upazilaDistrict)
@@ -157,7 +172,7 @@ data class StudentRecord(
         subjects: List<SubjectDefinition> = emptyList()
     ): Pair<Int, Int> {
         val fixedValues = listOf(
-            studentNameEn, fatherNameEn, motherNameEn, dateOfBirth, guardianPhone, effectiveAddress()
+            primaryName(), fatherNameEn, motherNameEn, dateOfBirth, guardianPhone, effectiveAddress()
         )
         val yearlyValues = listOf(
             rollNumber, classLevel, academicYear.toString()

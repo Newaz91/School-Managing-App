@@ -25,7 +25,9 @@ import androidx.compose.material.icons.rounded.AdminPanelSettings
 import androidx.compose.material.icons.rounded.Backup
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.EditNote
+import androidx.compose.material.icons.rounded.EmojiEvents
 import androidx.compose.material.icons.rounded.EventAvailable
+import androidx.compose.material.icons.rounded.Grade
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.HourglassTop
 import androidx.compose.material.icons.rounded.Insights
@@ -60,6 +62,7 @@ import com.example.R
 import com.example.data.model.ClassLevels
 import com.example.data.model.SchoolWorkspace
 import com.example.ui.components.YearSwitcherRow
+import com.example.ui.i18n.LocalAppStrings
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.viewmodel.DashboardSummary
 
@@ -77,6 +80,8 @@ fun DashboardScreen(
     onOpenAttendanceSheet: () -> Unit,
     onOpenApprovals: () -> Unit,
     onOpenBatchEntry: () -> Unit,
+    onOpenExamMarksSheet: () -> Unit = {},
+    onOpenClassResults: () -> Unit = {},
     onOpenFieldManager: () -> Unit,
     onExportReport: () -> Unit,
     onOpenBackupRestore: () -> Unit,
@@ -85,6 +90,7 @@ fun DashboardScreen(
     onOpenSchoolSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val strings = LocalAppStrings.current
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val isWide = maxWidth >= 640.dp
 
@@ -414,7 +420,7 @@ fun DashboardScreen(
                         ) {
                             Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("Add Student")
+                            Text(strings.newStudentButton, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                         FilledTonalButton(
                             onClick = onOpenAttendanceSheet,
@@ -425,7 +431,34 @@ fun DashboardScreen(
                         ) {
                             Icon(Icons.Rounded.EventAvailable, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("Attendance")
+                            Text(strings.tabAttendance, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        FilledTonalButton(
+                            onClick = onOpenExamMarksSheet,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .testTag("dashboard_exam_marks_button")
+                        ) {
+                            Icon(Icons.Rounded.Grade, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(strings.dashboardQuickExamMarks, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        FilledTonalButton(
+                            onClick = onOpenClassResults,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .testTag("dashboard_class_results_button")
+                        ) {
+                            Icon(Icons.Rounded.EmojiEvents, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(strings.dashboardQuickClassResults, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                     Row(
@@ -441,7 +474,7 @@ fun DashboardScreen(
                         ) {
                             Icon(Icons.Rounded.EditNote, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("Batch Entry", maxLines = 1)
+                            Text(strings.modeBatchEntry, maxLines = 1)
                         }
                         FilledTonalButton(
                             onClick = onOpenFieldManager,

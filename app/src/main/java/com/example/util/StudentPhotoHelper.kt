@@ -3,23 +3,38 @@ package com.example.util
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.net.Uri
 import android.util.Base64
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.core.content.FileProvider
 import java.io.ByteArrayOutputStream
+import java.io.File
 import kotlin.math.min
 import kotlin.math.roundToInt
 
 object StudentPhotoHelper {
 
+    fun createTempCameraPhotoUri(context: Context): Uri {
+        val dir = File(context.cacheDir, "camera_photos").apply { mkdirs() }
+        val file = File(dir, "student_cam_${System.currentTimeMillis()}.jpg")
+        return FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file
+        )
+    }
+
     /**
-     * Loads the selected image from Photo Picker Uri, center-crops it cleanly to a 3:4 passport
-     * portrait ratio, scales down to at most 210x280 px, and compresses as JPEG Base64 (< 110 KB)
-     * so it persists cleanly in Firestore and offline exports without needing broad storage permissions.
+     * Loads the selected or camera-captured image Uri, applies EXIF orientation,
+     * center-crops cleanly to a 3:4 passport portrait ratio, scales to at most 210x280 px,
+     * and compresses as JPEG Base64 (< 110 KB).
      */
     fun compressUriToPassportBase64(context: Context, uri: Uri): String? {
         return try {
+            val rotationDegrees = readExifRotationDegrees(context, uri)
             val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             context.contentResolver.openInputStream(uri)?.use { stream ->
                 BitmapFactory.decodeStream(stream, null, boundsOpts)
@@ -34,13 +49,24 @@ object StudentPhotoHelper {
             }
 
             val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
-            val rawBitmap = context.contentResolver.openInputStream(uri)?.use { stream ->
+            val decodedBitmap = context.contentResolver.openInputStream(uri)?.use { stream ->
                 BitmapFactory.decodeStream(stream, null, decodeOpts)
             } ?: return null
 
-            val cropped = centerCropPassportRatio(rawBitmap)
-            if (cropped !== rawBitmap) {
-                rawBitmap.recycle()
+            val uprightBitmap = if (rotationDegrees != 0f) {
+                val matrix = Matrix().apply { postRotate(rotationDegrees) }
+                Bitmap.createBitmap(
+                    decodedBitmap, 0, 0, decodedBitmap.width, decodedBitmap.height, matrix, true
+                ).also {
+                    if (it !== decodedBitmap) decodedBitmap.recycle()
+                }
+            } else {
+                decodedBitmap
+            }
+
+            val cropped = centerCropPassportRatio(uprightBitmap)
+            if (cropped !== uprightBitmap) {
+                uprightBitmap.recycle()
             }
 
             val targetW = 210
@@ -68,6 +94,22 @@ object StudentPhotoHelper {
             if (b64.length > 138_000) null else b64
         } catch (_: Exception) {
             null
+        }
+    }
+
+    private fun readExifRotationDegrees(context: Context, uri: Uri): Float {
+        return try {
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                val exif = ExifInterface(stream)
+                when (exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
+                    ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                    ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                    ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                    else -> 0f
+                }
+            } ?: 0f
+        } catch (_: Exception) {
+            0f
         }
     }
 

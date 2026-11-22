@@ -163,7 +163,7 @@ fun StudentListCard(
                 if (decodedThumb != null) {
                     Image(
                         bitmap = decodedThumb,
-                        contentDescription = "${student.studentNameEn} photo",
+                        contentDescription = "${student.primaryName()} photo",
                         modifier = Modifier
                             .size(width = 42.dp, height = 54.dp)
                             .clip(RoundedCornerShape(10.dp)),
@@ -190,15 +190,16 @@ fun StudentListCard(
 
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = student.studentNameEn,
+                        text = student.primaryName(),
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    if (student.studentNameBn.isNotBlank()) {
+                    val secondaryName = student.secondaryName()
+                    if (secondaryName.isNotBlank()) {
                         Text(
-                            text = student.studentNameBn,
+                            text = secondaryName,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,

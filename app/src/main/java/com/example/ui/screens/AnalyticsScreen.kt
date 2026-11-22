@@ -172,7 +172,8 @@ fun AnalyticsScreen(
                         AnalyticsViewMode.STUDENT_WISE -> {
                             val matching = allStudents.filter {
                                 val q = studentSearch.trim().lowercase()
-                                q.isBlank() || it.studentNameEn.lowercase().contains(q) ||
+                                q.isBlank() || it.studentNameBn.lowercase().contains(q) ||
+                                    it.studentNameEn.lowercase().contains(q) ||
                                     it.rollNumber.lowercase().contains(q) ||
                                     it.classLevel.lowercase().contains(q)
                             }
@@ -225,7 +226,7 @@ fun AnalyticsScreen(
                                                 FilterChip(
                                                     selected = activeStudent.id == s.id,
                                                     onClick = { selectedStudentId = s.id },
-                                                    label = { Text("${s.studentNameEn} (${ClassLevels.shortLabel(s.classLevel)}-${s.rollNumber})") }
+                                                    label = { Text("${s.primaryName()} (${ClassLevels.shortLabel(s.classLevel)}-${s.rollNumber})") }
                                                 )
                                             }
                                         }
@@ -256,7 +257,7 @@ fun AnalyticsScreen(
                                 ChartGridSection(
                                     isWide = isWide,
                                     firstCard = { mod ->
-                                        ChartCard("Student 5-Angle Pentagon (${activeStudent.studentNameEn})", mod) {
+                                        ChartCard("Student 5-Angle Pentagon (${activeStudent.primaryName()})", mod) {
                                             FiveAngleRadarChart(axes = radarAxes)
                                         }
                                     },
@@ -544,7 +545,7 @@ fun AnalyticsScreen(
                                             horizontalArrangement = Arrangement.SpaceBetween
                                         ) {
                                             Text(
-                                                text = "${idx + 1}. ${s.studentNameEn} (${s.classLevel}, Roll ${s.rollNumber})",
+                                                text = "${idx + 1}. ${s.primaryName()} (${s.classLevel}, Roll ${s.rollNumber})",
                                                 style = MaterialTheme.typography.bodyMedium,
                                                 modifier = Modifier.weight(1f)
                                             )

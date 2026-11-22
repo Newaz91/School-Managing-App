@@ -2,9 +2,6 @@ package com.example.ui.screens
 
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -27,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AddAPhoto
+import androidx.compose.material.icons.rounded.CameraAlt
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Delete
@@ -34,7 +32,9 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.EventAvailable
 import androidx.compose.material.icons.rounded.Grade
 import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -52,6 +52,7 @@ import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -78,6 +79,7 @@ import com.example.data.model.ExamDefaults
 import com.example.data.model.ExamTermConfig
 import com.example.data.model.StudentRecord
 import com.example.data.model.SubjectDefinition
+import com.example.data.model.TeacherProfile
 import com.example.ui.components.FiveAngleRadarChart
 import com.example.ui.components.HorizontalBarMetric
 import com.example.ui.components.HorizontalMetricBarChart
@@ -86,13 +88,15 @@ import com.example.ui.components.PieTierSlice
 import com.example.ui.components.RadarAxisMetric
 import com.example.ui.components.StudentAttendancePercentagePanel
 import com.example.ui.components.StudentMarksheetPanel
+import com.example.ui.i18n.LocalAppStrings
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.util.StudentPhotoHelper
+import com.example.util.rememberCameraOrGalleryPhotoPicker
 
-private enum class ProfileSection(val label: String) {
-    DOSSIER("Full Profile"),
-    ATTENDANCE("Attendance %"),
-    MARKSHEET("Marksheet (3)")
+private enum class ProfileSection {
+    DOSSIER,
+    ATTENDANCE,
+    MARKSHEET
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -104,6 +108,7 @@ fun StudentProfileScreen(
     customFields: List<CustomFieldDef>,
     attendanceLogs: List<AttendanceLog> = emptyList(),
     examConfigs: List<ExamTermConfig> = ExamDefaults.defaultThreeExams(),
+    teacherProfile: TeacherProfile? = null,
     isAdmin: Boolean = true,
     isSaving: Boolean = false,
     onSelectOtherStudent: (StudentRecord) -> Unit,
@@ -115,23 +120,15 @@ fun StudentProfileScreen(
 ) {
     BackHandler(onBack = onBack)
 
+    val strings = LocalAppStrings.current
     var activeSection by remember { mutableStateOf(ProfileSection.DOSSIER) }
-    val context = LocalContext.current
+    var showPhotoSourceDialog by remember { mutableStateOf(false) }
     val photoBitmap = remember(student.photoBase64) {
         StudentPhotoHelper.decodeBase64ToImageBitmap(student.photoBase64)
     }
 
-    val photoPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri ->
-        if (uri != null) {
-            val encoded = StudentPhotoHelper.compressUriToPassportBase64(context, uri)
-            if (encoded != null) {
-                onUpdateStudentRecord(student.copy(photoBase64 = encoded)) {}
-            } else {
-                Toast.makeText(context, "Could not process selected photo.", Toast.LENGTH_SHORT).show()
-            }
-        }
+    val photoPickerActions = rememberCameraOrGalleryPhotoPicker { encoded ->
+        onUpdateStudentRecord(student.copy(photoBase64 = encoded)) {}
     }
 
     val currentIndex = remember(student.id, allStudents) {
@@ -186,7 +183,7 @@ fun StudentProfileScreen(
                 title = {
                     Column {
                         Text(
-                            text = student.studentNameEn.ifBlank { "Student Profile" },
+                            text = student.primaryName().ifBlank { "Student Profile" },
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             style = MaterialTheme.typography.titleMedium,
@@ -297,7 +294,7 @@ fun StudentProfileScreen(
                                         if (photoBitmap != null) {
                                             Image(
                                                 bitmap = photoBitmap,
-                                                contentDescription = "${student.studentNameEn} passport photograph",
+                                                contentDescription = "${student.primaryName()} passport photograph",
                                                 modifier = Modifier.fillMaxSize(),
                                                 contentScale = ContentScale.Crop
                                             )
@@ -320,28 +317,43 @@ fun StudentProfileScreen(
                                                 )
                                             }
                                         }
+                                        Surface(
+                                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.9f),
+                                            shape = RoundedCornerShape(topStart = 10.dp),
+                                            modifier = Modifier.align(Alignment.BottomEnd)
+                                        ) {
+                                            IconButton(
+                                                onClick = { showPhotoSourceDialog = true },
+                                                modifier = Modifier
+                                                    .size(34.dp)
+                                                    .testTag("profile_camera_badge_button")
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.CameraAlt,
+                                                    contentDescription = strings.captureWithCamera,
+                                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                        }
                                     }
 
                                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                         FilledTonalButton(
-                                            onClick = {
-                                                photoPickerLauncher.launch(
-                                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                                )
-                                            },
+                                            onClick = { showPhotoSourceDialog = true },
                                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                                             modifier = Modifier
-                                                .height(34.dp)
+                                                .height(36.dp)
                                                 .testTag("profile_upload_photo_button")
                                         ) {
-                                            Icon(Icons.Rounded.AddAPhoto, contentDescription = "Upload photo", modifier = Modifier.size(14.dp))
+                                            Icon(Icons.Rounded.AddAPhoto, contentDescription = strings.pickPhotoSourceTitle, modifier = Modifier.size(14.dp))
                                             Spacer(Modifier.width(4.dp))
-                                            Text(if (photoBitmap != null) "Change" else "Photo", style = MaterialTheme.typography.labelSmall)
+                                            Text(if (photoBitmap != null) "Camera / Gallery" else "Photo", style = MaterialTheme.typography.labelSmall)
                                         }
                                         if (photoBitmap != null) {
                                             IconButton(
                                                 onClick = { onUpdateStudentRecord(student.copy(photoBase64 = "")) {} },
-                                                modifier = Modifier.size(34.dp)
+                                                modifier = Modifier.size(36.dp)
                                             ) {
                                                 Icon(
                                                     Icons.Rounded.Delete,
@@ -360,14 +372,15 @@ fun StudentProfileScreen(
                                     verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     Text(
-                                        text = student.studentNameEn.ifBlank { "Unnamed Student" },
+                                        text = student.primaryName().ifBlank { "Unnamed Student" },
                                         style = MaterialTheme.typography.titleLarge,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onPrimaryContainer
                                     )
-                                    if (student.studentNameBn.isNotBlank()) {
+                                    val secondary = student.secondaryName()
+                                    if (secondary.isNotBlank()) {
                                         Text(
-                                            text = student.studentNameBn,
+                                            text = secondary,
                                             style = MaterialTheme.typography.bodyMedium,
                                             color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
                                         )
@@ -478,7 +491,12 @@ fun StudentProfileScreen(
                                     },
                                     modifier = Modifier.testTag("profile_section_${sec.name.lowercase()}")
                                 ) {
-                                    Text(sec.label, maxLines = 1)
+                                    val secLabel = when (sec) {
+                                        ProfileSection.DOSSIER -> strings.profileFullTab
+                                        ProfileSection.ATTENDANCE -> strings.profileAttendanceTab
+                                        ProfileSection.MARKSHEET -> strings.profileMarksheetTab
+                                    }
+                                    Text(secLabel, maxLines = 1)
                                 }
                             }
                         }
@@ -504,6 +522,7 @@ fun StudentProfileScreen(
                                     allStudents = allStudents,
                                     examConfigs = examConfigs,
                                     schoolSubjects = subjects,
+                                    teacherProfile = teacherProfile,
                                     isAdmin = isAdmin,
                                     isSaving = isSaving,
                                     onSaveStudentMarks = onUpdateStudentRecord,
@@ -723,6 +742,51 @@ fun StudentProfileScreen(
             }
         }
     }
+
+    if (showPhotoSourceDialog) {
+        AlertDialog(
+            onDismissRequest = { showPhotoSourceDialog = false },
+            title = { Text(strings.pickPhotoSourceTitle) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(
+                        onClick = {
+                            showPhotoSourceDialog = false
+                            photoPickerActions.launchCamera()
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("profile_take_camera_photo_button")
+                    ) {
+                        Icon(Icons.Rounded.CameraAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(strings.captureWithCamera)
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            showPhotoSourceDialog = false
+                            photoPickerActions.launchGallery()
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("profile_choose_gallery_photo_button")
+                    ) {
+                        Icon(Icons.Rounded.PhotoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(strings.chooseFromGallery)
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showPhotoSourceDialog = false }) {
+                    Text(strings.cancelButton)
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -816,8 +880,8 @@ private fun FixedCoreDossierCard(
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
-            DossierDetailRow("Student Name (EN)", student.studentNameEn.ifBlank { "—" }, student.noteForKey("fixed_name_en"))
             DossierDetailRow("Student Name (BN)", student.studentNameBn.ifBlank { "—" }, student.noteForKey("fixed_name_bn"))
+            DossierDetailRow("Student Name (EN / Optional)", student.studentNameEn.ifBlank { "—" }, student.noteForKey("fixed_name_en"))
             DossierDetailRow("Father's Name", student.fatherNameEn.ifBlank { "—" }, student.noteForKey("fixed_father"))
             DossierDetailRow("Mother's Name", student.motherNameEn.ifBlank { "—" }, student.noteForKey("fixed_mother"))
             DossierDetailRow("Date of Birth", student.dateOfBirth.ifBlank { "—" }, student.noteForKey("fixed_dob"))

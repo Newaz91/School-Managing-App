@@ -24,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.FormatListNumbered
 import androidx.compose.material.icons.rounded.Save
@@ -62,7 +63,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.data.model.ClassLevels
+import com.example.data.model.ExamDefaults
+import com.example.data.model.ExamPassOutcome
+import com.example.data.model.ExamResultCalculator
+import com.example.data.model.ExamTermConfig
 import com.example.data.model.StudentRecord
+import com.example.ui.i18n.LocalAppStrings
 import com.example.ui.theme.JetBrainsMonoFontFamily
 
 private data class PromotionRowDraft(
@@ -75,15 +81,27 @@ private data class PromotionRowDraft(
 @Composable
 fun PromotionRollManagerScreen(
     allStudents: List<StudentRecord>,
+    examConfigs: List<ExamTermConfig> = ExamDefaults.defaultThreeExams(),
     selectedYear: Int,
     initialSelectedClass: String?,
     isAdmin: Boolean,
     isSaving: Boolean,
-    onSaveBatch: (Map<String, Map<String, Any>>, onSuccess: () -> Unit) -> Unit,
+    onSaveBatch: (
+        updatesByStudentId: Map<String, Map<String, Any>>,
+        customSummary: String?,
+        customDetails: String?,
+        onSuccess: () -> Unit
+    ) -> Unit,
     onRunPromotion: (Int) -> Unit,
     onBack: () -> Unit
 ) {
     BackHandler(onBack = onBack)
+
+    val strings = LocalAppStrings.current
+    val normalizedExams = remember(examConfigs) { ExamDefaults.ensureThreeExams(examConfigs) }
+    val finalExam = remember(normalizedExams) {
+        normalizedExams.firstOrNull { ExamResultCalculator.isFinalExam(it) } ?: normalizedExams.last()
+    }
 
     var selectedClass by remember { mutableStateOf(initialSelectedClass ?: "Class 1") }
     val orderedIds = remember { mutableStateListOf<String>() }
@@ -96,7 +114,7 @@ fun PromotionRollManagerScreen(
             .sortedWith(
                 compareBy<StudentRecord> { it.rollSortKey() }
                     .thenBy { it.rollNumber }
-                    .thenBy { it.studentNameEn.lowercase() }
+                    .thenBy { it.primaryName().lowercase() }
             )
     }
 
@@ -120,6 +138,51 @@ fun PromotionRollManagerScreen(
             val numbered = (idx + 1).toString().padStart(2, '0')
             val old = drafts[id] ?: return@forEachIndexed
             drafts[id] = old.copy(currentRoll = numbered, nextYearRoll = numbered)
+        }
+    }
+
+    val finalExamSheet = remember(finalExam, selectedClass, allStudents) {
+        ExamResultCalculator.computeClassResultSheet(
+            exam = finalExam,
+            classLevel = selectedClass,
+            allStudentsInYear = allStudents
+        )
+    }
+    val summaryByStudentId = remember(finalExamSheet) {
+        finalExamSheet.studentSummaries.associateBy { it.student.id }
+    }
+
+    fun autoApplyFinalExamMerit() {
+        val rankedIds = finalExamSheet.studentSummaries
+            .sortedWith(
+                compareBy<com.example.data.model.StudentExamResultSummary> {
+                    it.meritPosition ?: Int.MAX_VALUE
+                }.thenBy {
+                    when (it.outcome) {
+                        ExamPassOutcome.PASS -> 0
+                        ExamPassOutcome.FAIL -> 1
+                        ExamPassOutcome.PENDING -> 2
+                    }
+                }.thenBy { it.student.rollSortKey() }
+            )
+            .map { it.student.id }
+
+        if (rankedIds.isEmpty()) return
+        orderedIds.clear()
+        orderedIds.addAll(rankedIds)
+        rankedIds.forEachIndexed { idx, id ->
+            val s = summaryByStudentId[id] ?: return@forEachIndexed
+            val old = drafts[id] ?: return@forEachIndexed
+            val nextRoll = (idx + 1).toString().padStart(2, '0')
+            val nextStatus = when (s.outcome) {
+                ExamPassOutcome.PASS -> "Promoted"
+                ExamPassOutcome.FAIL -> "Not Promoted"
+                ExamPassOutcome.PENDING -> old.status
+            }
+            drafts[id] = old.copy(
+                nextYearRoll = nextRoll,
+                status = nextStatus
+            )
         }
     }
 
@@ -152,7 +215,12 @@ fun PromotionRollManagerScreen(
             afterSave()
             return
         }
-        onSaveBatch(batchMap, afterSave)
+        onSaveBatch(
+            batchMap,
+            "$selectedClass • Promotion & Rolls (${batchMap.size} students)",
+            "Updated next-year roll positions & promotion status",
+            afterSave
+        )
     }
 
     val classIdx = ClassLevels.ALL.indexOf(selectedClass)
@@ -258,27 +326,42 @@ fun PromotionRollManagerScreen(
                 }
 
                 item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "${classStudents.size} Student(s) • $promotedCount Promoted • $notPromotedCount Stay",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.weight(1f)
-                        )
-                        FilledTonalButton(
-                            onClick = { autoNumberRolls() },
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "${classStudents.size} ${strings.studentsCountWord} • $promotedCount ${strings.statusPromoted} • $notPromotedCount ${strings.statusNotPromoted}",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            FilledTonalButton(
+                                onClick = { autoNumberRolls() },
+                                enabled = orderedIds.isNotEmpty(),
+                                modifier = Modifier
+                                    .height(48.dp)
+                                    .testTag("promo_autonumber_button")
+                            ) {
+                                Icon(Icons.Rounded.FormatListNumbered, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(strings.autoNumberRolls, maxLines = 1)
+                            }
+                        }
+
+                        OutlinedButton(
+                            onClick = { autoApplyFinalExamMerit() },
                             enabled = orderedIds.isNotEmpty(),
                             modifier = Modifier
+                                .fillMaxWidth()
                                 .height(48.dp)
-                                .testTag("promo_autonumber_button")
+                                .testTag("promo_auto_final_merit_button")
                         ) {
-                            Icon(Icons.Rounded.FormatListNumbered, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Rounded.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("Auto-Number 01..N", maxLines = 1)
+                            Text(strings.autoMeritFromFinalExam, maxLines = 1)
                         }
                     }
                 }
@@ -324,16 +407,20 @@ fun PromotionRollManagerScreen(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
+                                        val finalSummary = summaryByStudentId[stuId]
+                                        val meritSuffix = if (finalSummary?.meritPosition != null) {
+                                            " • Rank ${ExamResultCalculator.ordinal(finalSummary.meritPosition)}"
+                                        } else ""
                                         Text(
-                                            text = "${idx + 1}. ${student.studentNameEn}",
+                                            text = "${idx + 1}. ${student.primaryName()}$meritSuffix",
                                             style = MaterialTheme.typography.titleSmall,
                                             fontWeight = FontWeight.Bold
                                         )
                                         Text(
                                             text = if (draft.status == "Promoted") {
-                                                "Moves -> $nextClassLabel (Roll ${draft.nextYearRoll.ifBlank { draft.currentRoll }})"
+                                                "Moves -> ${strings.localizeClass(nextClassLabel)} (Roll ${draft.nextYearRoll.ifBlank { draft.currentRoll }})"
                                             } else {
-                                                "Remains in ${student.classLevel} (Roll ${draft.nextYearRoll.ifBlank { draft.currentRoll }})"
+                                                "Remains in ${strings.localizeClass(student.classLevel)} (Roll ${draft.nextYearRoll.ifBlank { draft.currentRoll }})"
                                             },
                                             style = MaterialTheme.typography.labelSmall,
                                             color = if (draft.status == "Promoted") MaterialTheme.colorScheme.primary

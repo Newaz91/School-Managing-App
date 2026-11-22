@@ -41,6 +41,7 @@ import androidx.compose.material.icons.rounded.School
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.SwapVert
+import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -66,6 +67,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -91,12 +93,20 @@ import com.example.export.AppShareHelper
 import com.example.export.BackupParseResult
 import com.example.export.ExcelBackupManager
 import com.example.export.ExportTargetFormat
+import com.example.export.RawWorkbookPreview
 import com.example.export.ReportExporter
 import com.example.export.ShareAppDialog
 import com.example.ui.components.ExportShareBottomSheet
+import com.example.ui.components.UniversalExcelImportDialog
+import com.example.ui.i18n.AppLanguage
+import com.example.ui.i18n.AppStrings
+import com.example.ui.i18n.LocalAppLanguage
+import com.example.ui.i18n.LocalAppStrings
+import com.example.ui.i18n.stringsForLanguage
 import com.example.ui.screens.AnalyticsScreen
 import com.example.ui.screens.ApprovalsScreen
 import com.example.ui.screens.AttendanceSheetScreen
+import com.example.ui.screens.BatchMode
 import com.example.ui.screens.ConnectScreen
 import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.FieldSchemaManagerScreen
@@ -125,13 +135,27 @@ enum class MainTab(
     REGISTER("Students", Icons.Rounded.Groups, Icons.Outlined.Groups),
     ATTENDANCE("Attend", Icons.Rounded.EventAvailable, Icons.Outlined.EventAvailable),
     CHARTS("Charts", Icons.Rounded.PieChart, Icons.Outlined.PieChart),
-    SCHOOL("School", Icons.Rounded.School, Icons.Outlined.School)
+    SCHOOL("School", Icons.Rounded.School, Icons.Outlined.School);
+
+    fun localizedLabel(strings: AppStrings): String = when (this) {
+        DASHBOARD -> strings.tabDashboard
+        REGISTER -> strings.tabRegister
+        ATTENDANCE -> strings.tabAttendance
+        CHARTS -> strings.tabCharts
+        SCHOOL -> strings.tabSchool
+    }
 }
 
-private enum class SchoolSubTab(val label: String) {
-    APPROVALS("Approvals"),
-    CONNECT("Chat & Parents"),
-    SETTINGS("Settings & Backup")
+private enum class SchoolSubTab {
+    APPROVALS,
+    CONNECT,
+    SETTINGS;
+
+    fun localizedLabel(strings: AppStrings): String = when (this) {
+        APPROVALS -> strings.subTabApprovals
+        CONNECT -> strings.subTabConnect
+        SETTINGS -> strings.subTabSettings
+    }
 }
 
 private sealed interface ExportRequest {
@@ -172,34 +196,51 @@ fun AppNavigation() {
     var session by remember {
         mutableStateOf(AppPreferences.loadSession(context, BuildConfig.VERSION_CODE))
     }
+    var appLanguage by remember {
+        mutableStateOf(AppLanguage.fromCode(AppPreferences.loadLanguageCode(context)))
+    }
+    val appStrings = remember(appLanguage) { stringsForLanguage(appLanguage) }
+    val updateLanguage: (AppLanguage) -> Unit = { lang ->
+        appLanguage = lang
+        AppPreferences.saveLanguageCode(context, lang.code)
+    }
 
-    if (session.activeSchoolId.isBlank()) {
-        SchoolEntryScreen(
-            deviceId = session.deviceId,
-            initialTeacherName = session.teacherName,
-            initialTeacherPhone = session.teacherPhone,
-            recentSchools = session.recentSchools,
-            repository = repository,
-            onEnteredSchool = { schoolId, teacherName, teacherPhone ->
-                AppPreferences.saveActiveSchool(context, schoolId, teacherName, teacherPhone)
-                session = AppPreferences.loadSession(context, BuildConfig.VERSION_CODE)
-            }
-        )
-    } else {
-        key(session.activeSchoolId, session.deviceId, session.teacherPhone) {
-            SharedSchoolApp(
-                schoolId = session.activeSchoolId,
+    CompositionLocalProvider(
+        LocalAppLanguage provides appLanguage,
+        LocalAppStrings provides appStrings
+    ) {
+        if (session.activeSchoolId.isBlank()) {
+            SchoolEntryScreen(
                 deviceId = session.deviceId,
-                teacherName = session.teacherName,
-                teacherPhone = session.teacherPhone,
-                initialYear = session.selectedYear,
-                upgradedNotice = session.upgradedNoticeMessage,
-                db = db,
-                onSwitchSchool = {
-                    AppPreferences.clearActiveSchool(context)
+                initialTeacherName = session.teacherName,
+                initialTeacherPhone = session.teacherPhone,
+                recentSchools = session.recentSchools,
+                repository = repository,
+                onToggleLanguage = {
+                    updateLanguage(if (appLanguage == AppLanguage.EN) AppLanguage.BN else AppLanguage.EN)
+                },
+                onEnteredSchool = { schoolId, teacherName, teacherPhone ->
+                    AppPreferences.saveActiveSchool(context, schoolId, teacherName, teacherPhone)
                     session = AppPreferences.loadSession(context, BuildConfig.VERSION_CODE)
                 }
             )
+        } else {
+            key(session.activeSchoolId, session.deviceId, session.teacherPhone) {
+                SharedSchoolApp(
+                    schoolId = session.activeSchoolId,
+                    deviceId = session.deviceId,
+                    teacherName = session.teacherName,
+                    teacherPhone = session.teacherPhone,
+                    initialYear = session.selectedYear,
+                    upgradedNotice = session.upgradedNoticeMessage,
+                    db = db,
+                    onSelectLanguage = updateLanguage,
+                    onSwitchSchool = {
+                        AppPreferences.clearActiveSchool(context)
+                        session = AppPreferences.loadSession(context, BuildConfig.VERSION_CODE)
+                    }
+                )
+            }
         }
     }
 }
@@ -214,9 +255,12 @@ fun SharedSchoolApp(
     initialYear: Int,
     upgradedNotice: String?,
     db: FirebaseFirestore,
+    onSelectLanguage: (AppLanguage) -> Unit,
     onSwitchSchool: () -> Unit
 ) {
     val context = LocalContext.current
+    val strings = LocalAppStrings.current
+    val currentLanguage = LocalAppLanguage.current
     val scope = rememberCoroutineScope()
 
     val viewModel: SchoolViewModel = viewModel(
@@ -258,6 +302,7 @@ fun SharedSchoolApp(
     var openRegisterInBatch by remember { mutableStateOf(false) }
     var batchTargetClass by remember { mutableStateOf<String?>(null) }
     var batchTargetSubjectId by remember { mutableStateOf<String?>(null) }
+    var batchInitialModeEnum by remember { mutableStateOf<BatchMode?>(null) }
     var showFieldManager by remember { mutableStateOf(false) }
     var showPromotionManager by remember { mutableStateOf(false) }
     var showTopMenu by remember { mutableStateOf(false) }
@@ -268,6 +313,7 @@ fun SharedSchoolApp(
     var pendingSaveBytes by remember { mutableStateOf<ByteArray?>(null) }
     var pendingSaveLabel by remember { mutableStateOf("File") }
     var pendingRestorePreview by remember { mutableStateOf<BackupParseResult?>(null) }
+    var pendingRawWorkbookPreview by remember { mutableStateOf<RawWorkbookPreview?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     val workspace = (workspaceState as? UiState.Success)?.data
@@ -339,14 +385,18 @@ fun SharedSchoolApp(
     ) { uri ->
         if (uri != null) {
             try {
-                val parsed = ExcelBackupManager.parseBackupFromUri(
+                val parsedRaw = ExcelBackupManager.parseRawWorkbookFromUri(
                     context = context,
                     uri = uri,
                     defaultAcademicYear = selectedYear,
                     existingSubjects = subjects,
                     existingCustomFields = customFields
                 )
-                pendingRestorePreview = parsed
+                if (parsedRaw.isNativeMySchoolBackup && parsedRaw.nativeBackupResult != null) {
+                    pendingRestorePreview = parsedRaw.nativeBackupResult
+                } else {
+                    pendingRawWorkbookPreview = parsedRaw
+                }
             } catch (e: Exception) {
                 scope.launch {
                     snackbarHostState.showSnackbar(e.localizedMessage ?: "Could not read backup spreadsheet.")
@@ -404,11 +454,11 @@ fun SharedSchoolApp(
     fun buildExportFileName(request: ExportRequest, format: ExportTargetFormat): String =
         when (request) {
             is ExportRequest.SingleStudent -> {
-                val cleanName = request.student.studentNameEn
-                    .ifBlank { "student_${request.student.rollNumber}" }
+                val cleanName = request.student.primaryName()
                     .lowercase()
                     .replace(Regex("[^a-z0-9]+"), "_")
                     .trim('_')
+                    .ifBlank { "student_${request.student.rollNumber.ifBlank { "id" }}" }
                 "my_school_${cleanName}_${request.student.academicYear}.${format.extension}"
             }
             is ExportRequest.StudentList -> {
@@ -445,11 +495,14 @@ fun SharedSchoolApp(
     if (showPromotionManager) {
         PromotionRollManagerScreen(
             allStudents = allStudents,
+            examConfigs = examConfigs,
             selectedYear = selectedYear,
             initialSelectedClass = selectedClassFilter,
             isAdmin = isAdmin,
             isSaving = isSaving,
-            onSaveBatch = viewModel::saveBatchUpdates,
+            onSaveBatch = { updates, summaryTxt, detailsTxt, onSuccess ->
+                viewModel.saveBatchUpdates(updates, summaryTxt, detailsTxt, onSuccess)
+            },
             onRunPromotion = { targetYear ->
                 viewModel.promoteEligibleStudentsToNextYear(targetYear)
             },
@@ -531,6 +584,7 @@ fun SharedSchoolApp(
             customFields = customFields,
             attendanceLogs = attendanceLogs,
             examConfigs = examConfigs,
+            teacherProfile = teacherProfileView,
             isAdmin = isAdmin,
             isSaving = isSaving,
             onSelectOtherStudent = { next -> viewingProfileStudent = next },
@@ -561,17 +615,17 @@ fun SharedSchoolApp(
                             Column {
                                 Text(
                                     text = when (activeTab) {
-                                        MainTab.DASHBOARD -> workspace?.schoolName?.ifBlank { "My School" } ?: "My School"
-                                        MainTab.REGISTER -> "Students & Batch"
-                                        MainTab.ATTENDANCE -> "Class Attendance Sheet"
-                                        MainTab.CHARTS -> "Performance Charts"
-                                        MainTab.SCHOOL -> "School Hub & Settings"
+                                        MainTab.DASHBOARD -> workspace?.schoolName?.ifBlank { strings.appName } ?: strings.appName
+                                        MainTab.REGISTER -> strings.titleRegister
+                                        MainTab.ATTENDANCE -> strings.titleAttendance
+                                        MainTab.CHARTS -> strings.titleCharts
+                                        MainTab.SCHOOL -> strings.titleSchool
                                     },
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold
                                 )
                                 Text(
-                                    text = "ID: $schoolId • ${if (isAdmin) "ADMIN" else "TEACHER"} • $selectedYear (${allStudents.size} Students)",
+                                    text = "ID: $schoolId • ${if (isAdmin) strings.roleAdmin else strings.roleTeacher} • $selectedYear (${allStudents.size} ${strings.studentsCountWord})",
                                     fontFamily = JetBrainsMonoFontFamily,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.primary
@@ -579,6 +633,19 @@ fun SharedSchoolApp(
                             }
                         },
                         actions = {
+                            TextButton(
+                                onClick = {
+                                    onSelectLanguage(if (currentLanguage == AppLanguage.EN) AppLanguage.BN else AppLanguage.EN)
+                                },
+                                modifier = Modifier.testTag("topbar_language_toggle")
+                            ) {
+                                Icon(Icons.Rounded.Translate, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Text(
+                                    text = if (currentLanguage == AppLanguage.EN) " বাংলা" else " EN",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                             IconButton(
                                 onClick = {
                                     activeSchoolSubTab = SchoolSubTab.APPROVALS
@@ -635,7 +702,7 @@ fun SharedSchoolApp(
                                     onDismissRequest = { showTopMenu = false }
                                 ) {
                                     DropdownMenuItem(
-                                        text = { Text("Class Attendance Sheet") },
+                                        text = { Text(strings.menuAttendanceSheet) },
                                         leadingIcon = { Icon(Icons.Rounded.EventAvailable, contentDescription = null) },
                                         onClick = {
                                             showTopMenu = false
@@ -643,7 +710,7 @@ fun SharedSchoolApp(
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Admin Approvals (${summary.pendingChangesCount})") },
+                                        text = { Text("${strings.menuApprovals} (${summary.pendingChangesCount})") },
                                         leadingIcon = { Icon(Icons.Rounded.Approval, contentDescription = null) },
                                         onClick = {
                                             showTopMenu = false
@@ -652,7 +719,7 @@ fun SharedSchoolApp(
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Subjects & Assessment Fields") },
+                                        text = { Text(strings.menuSubjectsFields) },
                                         leadingIcon = { Icon(Icons.Rounded.MenuBook, contentDescription = null) },
                                         onClick = {
                                             showTopMenu = false
@@ -660,7 +727,7 @@ fun SharedSchoolApp(
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Backup Excel to Device / Drive") },
+                                        text = { Text(strings.menuBackupExcel) },
                                         leadingIcon = { Icon(Icons.Rounded.Backup, contentDescription = null) },
                                         enabled = allStudents.isNotEmpty(),
                                         onClick = {
@@ -669,7 +736,7 @@ fun SharedSchoolApp(
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Restore from Excel / Google Drive") },
+                                        text = { Text(strings.menuRestoreExcel) },
                                         leadingIcon = { Icon(Icons.Rounded.Restore, contentDescription = null) },
                                         onClick = {
                                             showTopMenu = false
@@ -677,7 +744,7 @@ fun SharedSchoolApp(
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Share My School & ID") },
+                                        text = { Text(strings.menuShareApp) },
                                         leadingIcon = { Icon(Icons.Rounded.Share, contentDescription = null) },
                                         onClick = {
                                             showTopMenu = false
@@ -685,7 +752,7 @@ fun SharedSchoolApp(
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Export Student Data") },
+                                        text = { Text(strings.menuExportRegister) },
                                         enabled = allStudents.isNotEmpty(),
                                         onClick = {
                                             showTopMenu = false
@@ -696,7 +763,7 @@ fun SharedSchoolApp(
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Promotion & Roll Positions") },
+                                        text = { Text(strings.menuPromotionRolls) },
                                         leadingIcon = { Icon(Icons.Rounded.SwapVert, contentDescription = null) },
                                         onClick = {
                                             showTopMenu = false
@@ -704,7 +771,7 @@ fun SharedSchoolApp(
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Logout / Switch School") },
+                                        text = { Text(strings.menuLogoutSwitch) },
                                         leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Logout, contentDescription = null) },
                                         onClick = {
                                             showTopMenu = false
@@ -730,24 +797,26 @@ fun SharedSchoolApp(
                                         openRegisterInBatch = false
                                         batchTargetClass = null
                                         batchTargetSubjectId = null
+                                        batchInitialModeEnum = null
                                         activeTab = tab
                                     },
                                     icon = {
+                                        val tabText = tab.localizedLabel(strings)
                                         if (tab == MainTab.SCHOOL && summary.pendingChangesCount > 0) {
                                             BadgedBox(badge = { Badge { Text("${summary.pendingChangesCount}") } }) {
                                                 Icon(
                                                     imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
-                                                    contentDescription = tab.label
+                                                    contentDescription = tabText
                                                 )
                                             }
                                         } else {
                                             Icon(
                                                 imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
-                                                contentDescription = tab.label
+                                                contentDescription = tabText
                                             )
                                         }
                                     },
-                                    label = { Text(tab.label, maxLines = 1) },
+                                    label = { Text(tab.localizedLabel(strings), maxLines = 1) },
                                     modifier = Modifier.testTag("nav_tab_${tab.name.lowercase()}")
                                 )
                             }
@@ -759,7 +828,7 @@ fun SharedSchoolApp(
                         ExtendedFloatingActionButton(
                             onClick = openNewStudent,
                             icon = { Icon(Icons.Rounded.Add, contentDescription = null) },
-                            text = { Text("New Student") },
+                            text = { Text(strings.newStudentButton) },
                             containerColor = MaterialTheme.colorScheme.primary,
                             contentColor = MaterialTheme.colorScheme.onPrimary,
                             modifier = Modifier.testTag("fab_new_student")
@@ -784,24 +853,26 @@ fun SharedSchoolApp(
                                         openRegisterInBatch = false
                                         batchTargetClass = null
                                         batchTargetSubjectId = null
+                                        batchInitialModeEnum = null
                                         activeTab = tab
                                     },
                                     icon = {
+                                        val tabText = tab.localizedLabel(strings)
                                         if (tab == MainTab.SCHOOL && summary.pendingChangesCount > 0) {
                                             BadgedBox(badge = { Badge { Text("${summary.pendingChangesCount}") } }) {
                                                 Icon(
                                                     imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
-                                                    contentDescription = tab.label
+                                                    contentDescription = tabText
                                                 )
                                             }
                                         } else {
                                             Icon(
                                                 imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
-                                                contentDescription = tab.label
+                                                contentDescription = tabText
                                             )
                                         }
                                     },
-                                    label = { Text(tab.label) },
+                                    label = { Text(tab.localizedLabel(strings)) },
                                     modifier = Modifier.testTag("rail_tab_${tab.name.lowercase()}")
                                 )
                             }
@@ -825,6 +896,7 @@ fun SharedSchoolApp(
                                 openRegisterInBatch = false
                                 batchTargetClass = null
                                 batchTargetSubjectId = null
+                                batchInitialModeEnum = null
                                 activeTab = MainTab.REGISTER
                             },
                             onAddStudent = openNewStudent,
@@ -837,6 +909,21 @@ fun SharedSchoolApp(
                                 openRegisterInBatch = true
                                 batchTargetClass = null
                                 batchTargetSubjectId = null
+                                batchInitialModeEnum = null
+                                activeTab = MainTab.REGISTER
+                            },
+                            onOpenExamMarksSheet = {
+                                openRegisterInBatch = true
+                                batchTargetClass = selectedClassFilter
+                                batchTargetSubjectId = null
+                                batchInitialModeEnum = BatchMode.EXAM_MARKS
+                                activeTab = MainTab.REGISTER
+                            },
+                            onOpenClassResults = {
+                                openRegisterInBatch = true
+                                batchTargetClass = selectedClassFilter
+                                batchTargetSubjectId = null
+                                batchInitialModeEnum = BatchMode.CLASS_RESULTS
                                 activeTab = MainTab.REGISTER
                             },
                             onOpenFieldManager = { showFieldManager = true },
@@ -863,20 +950,27 @@ fun SharedSchoolApp(
                             filteredStudents = filteredStudents,
                             subjects = subjects,
                             customFields = customFields,
+                            examConfigs = examConfigs,
+                            teacherProfile = teacherProfileView,
                             selectedYear = selectedYear,
                             searchQuery = searchQuery,
                             selectedClassFilter = selectedClassFilter,
                             quickFilter = quickFilter,
+                            isAdmin = isAdmin,
                             isSaving = isSaving,
                             initialBatchMode = openRegisterInBatch,
                             initialBatchClass = batchTargetClass,
                             initialBatchSubjectId = batchTargetSubjectId,
+                            initialBatchModeEnum = batchInitialModeEnum,
                             onSearchQueryChange = viewModel::setSearchQuery,
                             onClassFilterChange = viewModel::setClassFilter,
                             onQuickFilterChange = viewModel::setQuickFilter,
                             onStudentClick = { student -> viewingProfileStudent = student },
                             onAddStudent = openNewStudent,
-                            onSaveBatch = viewModel::saveBatchUpdates,
+                            onSaveBatch = { updates, summaryTxt, detailsTxt, onSuccess ->
+                                viewModel.saveBatchUpdates(updates, summaryTxt, detailsTxt, onSuccess)
+                            },
+                            onSaveExamConfigs = viewModel::saveExamConfigs,
                             onOpenFieldManager = { showFieldManager = true },
                             onOpenPromotionManager = { showPromotionManager = true }
                         )
@@ -935,9 +1029,10 @@ fun SharedSchoolApp(
                                         },
                                         modifier = Modifier.testTag("school_subtab_${sub.name.lowercase()}")
                                     ) {
+                                        val subText = sub.localizedLabel(strings)
                                         val txt = if (sub == SchoolSubTab.APPROVALS && summary.pendingChangesCount > 0) {
-                                            "${sub.label} (${summary.pendingChangesCount})"
-                                        } else sub.label
+                                            "$subText (${summary.pendingChangesCount})"
+                                        } else subText
                                         Text(txt, maxLines = 1)
                                     }
                                 }
@@ -983,6 +1078,7 @@ fun SharedSchoolApp(
                                     subjects = subjects,
                                     customFieldsCount = customFields.size,
                                     isSaving = isSaving,
+                                    onSelectLanguage = onSelectLanguage,
                                     onUpdateSchoolDetails = viewModel::updateSchoolDetails,
                                     onSaveExamConfigs = viewModel::saveExamConfigs,
                                     onTransferAdmin = viewModel::transferAdminRole,
@@ -1033,13 +1129,28 @@ fun SharedSchoolApp(
                         viewModel.restoreFromBackup(restoreCandidate)
                     }
                 ) {
-                    Text("Restore Now")
+                    Text(strings.restoreNowBtn)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { pendingRestorePreview = null }) {
-                    Text("Cancel")
+                    Text(strings.cancelButton)
                 }
+            }
+        )
+    }
+
+    val rawWorkbookPreview = pendingRawWorkbookPreview
+    if (rawWorkbookPreview != null) {
+        UniversalExcelImportDialog(
+            preview = rawWorkbookPreview,
+            examConfigs = examConfigs,
+            existingCustomFields = customFields,
+            selectedYear = selectedYear,
+            onDismiss = { pendingRawWorkbookPreview = null },
+            onConfirmImport = { mappedResult ->
+                pendingRawWorkbookPreview = null
+                viewModel.restoreFromBackup(mappedResult)
             }
         )
     }
@@ -1072,7 +1183,7 @@ fun SharedSchoolApp(
     val currentExport = activeExportRequest
     if (currentExport != null) {
         val sheetTitle = when (currentExport) {
-            is ExportRequest.SingleStudent -> "Export ${currentExport.student.studentNameEn.ifBlank { "Student" }}"
+            is ExportRequest.SingleStudent -> "Export ${currentExport.student.primaryName().ifBlank { "Student" }}"
             is ExportRequest.StudentList -> "Export & Share Register"
         }
         val sheetSubtitle = when (currentExport) {

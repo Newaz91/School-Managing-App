@@ -25,6 +25,7 @@ object AppPreferences {
     private const val KEY_SELECTED_YEAR = "selected_year"
     private const val KEY_LAST_VERSION_CODE = "last_version_code"
     private const val KEY_MIGRATED_LEGACY_UID = "migrated_legacy_uid"
+    private const val KEY_APP_LANGUAGE = "app_language"
 
     private fun prefs(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -32,7 +33,14 @@ object AppPreferences {
     fun authPrefs(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(AUTH_PREFS_NAME, Context.MODE_PRIVATE)
 
-    fun loadSession(context: Context, currentVersionCode: Int = 3): LocalSchoolSession {
+    fun loadLanguageCode(context: Context): String =
+        prefs(context).getString(KEY_APP_LANGUAGE, "en").orEmpty().ifBlank { "en" }
+
+    fun saveLanguageCode(context: Context, code: String) {
+        prefs(context).edit().putString(KEY_APP_LANGUAGE, if (code == "bn") "bn" else "en").apply()
+    }
+
+    fun loadSession(context: Context, currentVersionCode: Int = 5): LocalSchoolSession {
         val p = prefs(context)
         var devId = p.getString(KEY_DEVICE_ID, null).orEmpty()
         if (devId.isBlank()) {
@@ -43,13 +51,15 @@ object AppPreferences {
         val lastVersion = p.getInt(KEY_LAST_VERSION_CODE, 0)
         var activeSchoolId = p.getString(KEY_ACTIVE_SCHOOL_ID, "").orEmpty()
         val upgradeMsg = if (lastVersion in 1 until currentVersionCode) {
-            // On app update to v1.2, require fresh sign-in into the updated Teachers panel
-            // while preserving recentSchools, selectedYear, and all Firestore school data.
             if (lastVersion < 3 && activeSchoolId.isNotBlank()) {
+                // Only upgrades from pre-v1.2 require re-entering the refreshed Teachers Panel
                 activeSchoolId = ""
                 p.edit().putString(KEY_ACTIVE_SCHOOL_ID, "").apply()
+                "Updated — Teachers Panel refreshed; all student & subject data preserved. First teacher to sign in becomes Admin."
+            } else {
+                // Upgrades from v1.2+ preserve login session and all existing school data seamlessly
+                "Updated to v1.4 — All existing students, marks, attendance & teacher accounts preserved."
             }
-            "Updated to v1.2 — Teachers Panel refreshed; all student & subject data preserved. First teacher to sign in becomes Admin."
         } else null
         if (lastVersion != currentVersionCode) {
             p.edit().putInt(KEY_LAST_VERSION_CODE, currentVersionCode).apply()

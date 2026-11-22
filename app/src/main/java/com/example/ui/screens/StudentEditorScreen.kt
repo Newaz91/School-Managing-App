@@ -129,7 +129,7 @@ fun StudentEditorScreen(
                     Column {
                         Text(
                             text = if (isExisting) {
-                                draft.studentNameEn.ifBlank { "Edit Student" }
+                                draft.primaryName().ifBlank { "Edit Student" }
                             } else {
                                 "Enroll New Student"
                             },
@@ -213,8 +213,8 @@ fun StudentEditorScreen(
                     Button(
                         onClick = {
                             when {
-                                draft.studentNameEn.isBlank() -> {
-                                    validationError = "Student Name (English) is required."
+                                draft.studentNameBn.isBlank() -> {
+                                    validationError = "Student Name (Bangla / বাংলা নাম) is required."
                                     activeTab = EditorSectionTab.FIXED
                                 }
                                 draft.rollNumber.isBlank() -> {
@@ -410,7 +410,7 @@ fun StudentEditorScreen(
             onDismissRequest = { showDeleteConfirm = false },
             title = { Text("Remove Student?") },
             text = {
-                Text("Remove ${draft.studentNameEn} (Roll ${draft.rollNumber}) from your ${draft.academicYear} register? This cannot be undone.")
+                Text("Remove ${draft.primaryName()} (Roll ${draft.rollNumber}) from your ${draft.academicYear} register? This cannot be undone.")
             },
             confirmButton = {
                 TextButton(

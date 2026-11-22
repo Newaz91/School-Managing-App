@@ -46,8 +46,10 @@ service cloud.firestore {
 
     function isValidSchoolStudent(d, schoolId) {
       return d.schoolId is string && d.schoolId == schoolId &&
-             d.studentNameEn is string && d.studentNameEn.size() >= 1 && d.studentNameEn.size() <= 120 &&
              (!('studentNameBn' in d) || (d.studentNameBn is string && d.studentNameBn.size() <= 120)) &&
+             (!('studentNameEn' in d) || (d.studentNameEn is string && d.studentNameEn.size() <= 120)) &&
+             (('studentNameBn' in d && d.studentNameBn is string && d.studentNameBn.size() >= 1) ||
+              ('studentNameEn' in d && d.studentNameEn is string && d.studentNameEn.size() >= 1)) &&
              (!('fatherNameEn' in d) || (d.fatherNameEn is string && d.fatherNameEn.size() <= 120)) &&
              (!('motherNameEn' in d) || (d.motherNameEn is string && d.motherNameEn.size() <= 120)) &&
              (!('dateOfBirth' in d) || (d.dateOfBirth is string && d.dateOfBirth.size() <= 30)) &&
@@ -180,7 +182,7 @@ service cloud.firestore {
         allow get, list: if isValidSchoolCode(schoolId);
 
         allow create: if isValidSchoolCode(schoolId) && isValidId(studentId) &&
-                         request.resource.data.keys().hasAll(['schoolId', 'studentNameEn', 'rollNumber', 'classLevel', 'academicYear', 'createdAt', 'updatedAt']) &&
+                         request.resource.data.keys().hasAll(['schoolId', 'rollNumber', 'classLevel', 'academicYear', 'createdAt', 'updatedAt']) &&
                          request.resource.data.keys().hasOnly([
                            'schoolId', 'createdAt', 'updatedAt',
                            'studentNameEn', 'studentNameBn', 'fatherNameEn', 'motherNameEn',

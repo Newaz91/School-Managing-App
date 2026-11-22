@@ -5,18 +5,22 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.CameraAlt
+import androidx.compose.material.icons.rounded.Contacts
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -44,6 +48,10 @@ import com.example.data.model.SubjectDefinition
 import com.example.data.model.SubjectFieldDef
 import com.example.ui.components.FlexibleChipSelector
 import com.example.ui.components.FlexibleFieldInput
+import com.example.ui.i18n.LocalAppStrings
+import com.example.util.StudentPhotoHelper
+import com.example.util.rememberCameraOrGalleryPhotoPicker
+import com.example.util.rememberContactPhonePicker
 
 @Composable
 fun FixedCoreSectionFields(
@@ -51,21 +59,15 @@ fun FixedCoreSectionFields(
     expandAllDetails: Boolean,
     onChange: (StudentRecord) -> Unit
 ) {
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val strings = LocalAppStrings.current
     val photoBitmap = remember(student.photoBase64) {
-        com.example.util.StudentPhotoHelper.decodeBase64ToImageBitmap(student.photoBase64)
+        StudentPhotoHelper.decodeBase64ToImageBitmap(student.photoBase64)
     }
-    val photoPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        contract = androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()
-    ) { uri ->
-        if (uri != null) {
-            val encoded = com.example.util.StudentPhotoHelper.compressUriToPassportBase64(context, uri)
-            if (encoded != null) {
-                onChange(student.copy(photoBase64 = encoded))
-            } else {
-                android.widget.Toast.makeText(context, "Could not process selected photo.", android.widget.Toast.LENGTH_SHORT).show()
-            }
-        }
+    val photoPickerActions = rememberCameraOrGalleryPhotoPicker { encoded ->
+        onChange(student.copy(photoBase64 = encoded))
+    }
+    val launchContactPicker = rememberContactPhonePicker { pickedPhone ->
+        onChange(student.copy(guardianPhone = pickedPhone))
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -101,7 +103,7 @@ fun FixedCoreSectionFields(
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
-                        text = "Passport-Size Photograph",
+                        text = strings.passportPhotoTitle,
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold
                     )
@@ -110,18 +112,26 @@ fun FixedCoreSectionFields(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
-                            onClick = {
-                                photoPickerLauncher.launch(
-                                    androidx.activity.result.PickVisualMediaRequest(
-                                        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly
-                                    )
-                                )
-                            },
-                            modifier = Modifier.testTag("editor_pick_photo_button")
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FilledTonalButton(
+                            onClick = { photoPickerActions.launchCamera() },
+                            modifier = Modifier
+                                .height(42.dp)
+                                .testTag("editor_camera_photo_button")
                         ) {
-                            Text(if (photoBitmap != null) "Change Photo" else "Select Photo")
+                            Icon(Icons.Rounded.CameraAlt, contentDescription = strings.captureWithCamera, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Camera", style = MaterialTheme.typography.labelSmall)
+                        }
+                        OutlinedButton(
+                            onClick = { photoPickerActions.launchGallery() },
+                            modifier = Modifier
+                                .height(42.dp)
+                                .testTag("editor_pick_photo_button")
+                        ) {
+                            Icon(Icons.Rounded.PhotoLibrary, contentDescription = strings.chooseFromGallery, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Gallery", style = MaterialTheme.typography.labelSmall)
                         }
                         if (photoBitmap != null) {
                             IconButton(onClick = { onChange(student.copy(photoBase64 = "")) }) {
@@ -134,28 +144,36 @@ fun FixedCoreSectionFields(
         }
 
         FlexibleFieldInput(
-            fieldKey = "fixed_name_en",
-            badgeLabel = "Fixed",
-            label = "Student Name (English)",
-            value = student.studentNameEn,
-            onValueChange = { onChange(student.copy(studentNameEn = it)) },
-            detailNote = student.noteForKey("fixed_name_en"),
-            onDetailNoteChange = { onChange(student.withNoteForKey("fixed_name_en", it)) },
-            forceExpandDetail = expandAllDetails,
-            placeholder = "e.g. Nusrat Jahan Mim",
-            required = true,
-            allowClear = false
-        )
-        FlexibleFieldInput(
             fieldKey = "fixed_name_bn",
             badgeLabel = "Fixed",
-            label = "Student Name (Bangla / বাংলা নাম)",
+            label = if (strings.language == com.example.ui.i18n.AppLanguage.BN) {
+                "শিক্ষার্থীর নাম (বাংলা)"
+            } else {
+                "Student Name (Bangla / বাংলা নাম)"
+            },
             value = student.studentNameBn,
             onValueChange = { onChange(student.copy(studentNameBn = it)) },
             detailNote = student.noteForKey("fixed_name_bn"),
             onDetailNoteChange = { onChange(student.withNoteForKey("fixed_name_bn", it)) },
             forceExpandDetail = expandAllDetails,
-            placeholder = "e.g. নুসরাত জাহান মিম"
+            placeholder = "যেমন: নুসরাত জাহান মিম",
+            required = true,
+            allowClear = false
+        )
+        FlexibleFieldInput(
+            fieldKey = "fixed_name_en",
+            badgeLabel = "Fixed",
+            label = if (strings.language == com.example.ui.i18n.AppLanguage.BN) {
+                "শিক্ষার্থীর নাম (ইংরেজি - ঐচ্ছিক)"
+            } else {
+                "Student Name (English — Optional)"
+            },
+            value = student.studentNameEn,
+            onValueChange = { onChange(student.copy(studentNameEn = it)) },
+            detailNote = student.noteForKey("fixed_name_en"),
+            onDetailNoteChange = { onChange(student.withNoteForKey("fixed_name_en", it)) },
+            forceExpandDetail = expandAllDetails,
+            placeholder = "e.g. Nusrat Jahan Mim (Optional)"
         )
         FlexibleFieldInput(
             fieldKey = "fixed_father",
@@ -190,18 +208,34 @@ fun FixedCoreSectionFields(
             forceExpandDetail = expandAllDetails,
             placeholder = "DD/MM/YYYY"
         )
-        FlexibleFieldInput(
-            fieldKey = "fixed_phone",
-            badgeLabel = "Fixed",
-            label = "Phone Number",
-            value = student.guardianPhone,
-            onValueChange = { onChange(student.copy(guardianPhone = it)) },
-            detailNote = student.noteForKey("fixed_phone"),
-            onDetailNoteChange = { onChange(student.withNoteForKey("fixed_phone", it)) },
-            forceExpandDetail = expandAllDetails,
-            placeholder = "01XXXXXXXXX",
-            keyboardType = KeyboardType.Phone
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            FlexibleFieldInput(
+                fieldKey = "fixed_phone",
+                badgeLabel = "Fixed",
+                label = strings.phoneNumberLabel,
+                value = student.guardianPhone,
+                onValueChange = { onChange(student.copy(guardianPhone = it)) },
+                detailNote = student.noteForKey("fixed_phone"),
+                onDetailNoteChange = { onChange(student.withNoteForKey("fixed_phone", it)) },
+                forceExpandDetail = expandAllDetails,
+                placeholder = "01XXXXXXXXX",
+                keyboardType = KeyboardType.Phone,
+                modifier = Modifier.weight(1f)
+            )
+            FilledTonalButton(
+                onClick = launchContactPicker,
+                modifier = Modifier
+                    .padding(top = 6.dp)
+                    .height(54.dp)
+                    .testTag("editor_pick_contact_phone")
+            ) {
+                Icon(Icons.Rounded.Contacts, contentDescription = strings.pickFromContacts, modifier = Modifier.size(18.dp))
+            }
+        }
         FlexibleFieldInput(
             fieldKey = "fixed_address",
             badgeLabel = "Fixed",

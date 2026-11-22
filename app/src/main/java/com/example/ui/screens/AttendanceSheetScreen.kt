@@ -570,7 +570,7 @@ private fun WeeklyAttendanceView(
 
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = student.studentNameEn.ifBlank { "Unnamed Student" },
+                                    text = student.primaryName().ifBlank { "Unnamed Student" },
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.SemiBold,
                                     maxLines = 1,
@@ -874,7 +874,7 @@ private fun MonthlyAttendanceView(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "${student.rollNumber}. ${student.studentNameEn}",
+                            text = "${student.rollNumber}. ${student.primaryName()}",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.SemiBold,
                             modifier = Modifier.weight(1f),
@@ -1049,7 +1049,7 @@ private fun YearlyAttendanceView(
                     }
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = student.studentNameEn.ifBlank { "Unnamed" },
+                            text = student.primaryName().ifBlank { "Unnamed" },
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1,

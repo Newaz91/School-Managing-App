@@ -294,9 +294,9 @@ class SchoolViewModel(
                 _isSaving.value = false
                 result.onSuccess {
                     _feedbackMessage.value = if (student.id.isBlank()) {
-                        "Added ${student.studentNameEn} (Roll ${student.rollNumber})"
+                        "Added ${student.primaryName()} (Roll ${student.rollNumber})"
                     } else {
-                        "Updated ${student.studentNameEn}'s record"
+                        "Updated ${student.primaryName()}'s record"
                     }
                     onSuccess()
                 }.onFailure { err ->
@@ -310,9 +310,9 @@ class SchoolViewModel(
                     submittedByDeviceId = deviceId,
                     submittedByName = actor,
                     summary = if (isNew) {
-                        "New Student: ${student.studentNameEn} (${student.classLevel}, Roll ${student.rollNumber})"
+                        "New Student: ${student.primaryName()} (${student.classLevel}, Roll ${student.rollNumber})"
                     } else {
-                        "Edit Student: ${student.studentNameEn} (${student.classLevel}, Roll ${student.rollNumber})"
+                        "Edit Student: ${student.primaryName()} (${student.classLevel}, Roll ${student.rollNumber})"
                     },
                     detailsText = "Year ${student.academicYear} • Attendance ${student.daysPresent}/${student.totalSchoolDays} • ${student.examResults.size} exam marks • ${student.subjectValues.size} subject scores",
                     payloadJson = PendingPayloadCodec.encodeStudent(student)
@@ -320,7 +320,7 @@ class SchoolViewModel(
                 val result = repository.submitPendingChange(schoolId, req)
                 _isSaving.value = false
                 result.onSuccess {
-                    _feedbackMessage.value = "Submitted ${student.studentNameEn}'s changes for Admin confirmation"
+                    _feedbackMessage.value = "Submitted ${student.primaryName()}'s changes for Admin confirmation"
                     onSuccess()
                 }.onFailure { err ->
                     _feedbackMessage.value = err.message ?: "Could not submit change for approval."
@@ -338,7 +338,7 @@ class SchoolViewModel(
                 val result = repository.deleteStudentDirect(schoolId, student.id)
                 _isSaving.value = false
                 result.onSuccess {
-                    _feedbackMessage.value = "Removed ${student.studentNameEn} from register"
+                    _feedbackMessage.value = "Removed ${student.primaryName()} from register"
                     onSuccess()
                 }.onFailure { err ->
                     _feedbackMessage.value = err.message ?: "Could not remove student."
@@ -349,7 +349,7 @@ class SchoolViewModel(
                     targetId = student.id,
                     submittedByDeviceId = deviceId,
                     submittedByName = actor,
-                    summary = "Remove Student: ${student.studentNameEn} (${student.classLevel}, Roll ${student.rollNumber})",
+                    summary = "Remove Student: ${student.primaryName()} (${student.classLevel}, Roll ${student.rollNumber})",
                     detailsText = "Requested removal of student ID ${student.id}",
                     payloadJson = "{\"id\":\"${student.id}\"}"
                 )
@@ -367,6 +367,8 @@ class SchoolViewModel(
 
     fun saveBatchUpdates(
         updatesByStudentId: Map<String, Map<String, Any>>,
+        customSummary: String? = null,
+        customDetails: String? = null,
         onSuccess: () -> Unit = {}
     ) {
         val isAdmin = isAdminState.value
@@ -388,8 +390,8 @@ class SchoolViewModel(
                     targetId = "batch_${updatesByStudentId.size}",
                     submittedByDeviceId = deviceId,
                     submittedByName = actor,
-                    summary = "Batch Edit: ${updatesByStudentId.size} student(s)",
-                    detailsText = "Class register batch update for ${updatesByStudentId.size} student records",
+                    summary = customSummary?.take(160) ?: "Batch Edit: ${updatesByStudentId.size} student(s)",
+                    detailsText = customDetails?.take(600) ?: "Class register batch update for ${updatesByStudentId.size} student records",
                     payloadJson = PendingPayloadCodec.encodeBatchStudentUpdates(updatesByStudentId)
                 )
                 val result = repository.submitPendingChange(schoolId, req)
@@ -524,7 +526,8 @@ class SchoolViewModel(
                 existingStudents = currentStudents,
                 subjectsToUpsert = parsed.subjectsToUpsert,
                 customFieldsToUpsert = parsed.customFieldsToUpsert,
-                actorName = activeActorName()
+                actorName = activeActorName(),
+                replaceMatchedExisting = parsed.replaceMatchedExisting
             )
             _isSaving.value = false
             result.onSuccess { (stuCount, subCount, cfCount) ->

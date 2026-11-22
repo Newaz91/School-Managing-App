@@ -36,6 +36,7 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,18 +46,22 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.example.data.model.CustomFieldDef
+import com.example.data.model.ExamDefaults
+import com.example.data.model.ExamTermConfig
 import com.example.data.model.StudentRecord
 import com.example.data.model.SubjectDefinition
+import com.example.data.model.TeacherProfile
 import com.example.ui.components.ClassFilterRow
 import com.example.ui.components.EmptyRegisterState
 import com.example.ui.components.StudentListCard
+import com.example.ui.i18n.LocalAppStrings
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.viewmodel.RegisterQuickFilter
 import com.example.ui.viewmodel.UiState
 
-private enum class RegisterSubMode(val label: String) {
-    STUDENT_LIST("Student List"),
-    BATCH_UPDATE("Batch Entry")
+private enum class RegisterSubMode {
+    STUDENT_LIST,
+    BATCH_UPDATE
 }
 
 @Composable
@@ -65,30 +70,47 @@ fun RegisterScreen(
     filteredStudents: List<StudentRecord>,
     subjects: List<SubjectDefinition>,
     customFields: List<CustomFieldDef>,
+    examConfigs: List<ExamTermConfig> = ExamDefaults.defaultThreeExams(),
+    teacherProfile: TeacherProfile? = null,
     selectedYear: Int,
     searchQuery: String,
     selectedClassFilter: String?,
     quickFilter: RegisterQuickFilter,
+    isAdmin: Boolean = true,
     isSaving: Boolean,
     initialBatchMode: Boolean = false,
     initialBatchClass: String? = null,
     initialBatchSubjectId: String? = null,
+    initialBatchModeEnum: BatchMode? = null,
     onSearchQueryChange: (String) -> Unit,
     onClassFilterChange: (String?) -> Unit,
     onQuickFilterChange: (RegisterQuickFilter) -> Unit,
     onStudentClick: (StudentRecord) -> Unit,
     onAddStudent: () -> Unit,
-    onSaveBatch: (Map<String, Map<String, Any>>, onSuccess: () -> Unit) -> Unit,
+    onSaveBatch: (
+        updatesByStudentId: Map<String, Map<String, Any>>,
+        customSummary: String?,
+        customDetails: String?,
+        onSuccess: () -> Unit
+    ) -> Unit,
+    onSaveExamConfigs: (List<ExamTermConfig>, onSuccess: () -> Unit) -> Unit = { _, done -> done() },
     onOpenFieldManager: () -> Unit,
     onOpenPromotionManager: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    var subMode by remember(initialBatchMode, initialBatchSubjectId) {
+    val strings = LocalAppStrings.current
+    var subMode by remember(initialBatchMode, initialBatchSubjectId, initialBatchModeEnum) {
         mutableStateOf(
-            if (initialBatchMode || !initialBatchSubjectId.isNullOrBlank()) {
+            if (initialBatchMode || !initialBatchSubjectId.isNullOrBlank() || initialBatchModeEnum != null) {
                 RegisterSubMode.BATCH_UPDATE
             } else RegisterSubMode.STUDENT_LIST
         )
+    }
+
+    LaunchedEffect(initialBatchMode, initialBatchModeEnum, initialBatchSubjectId) {
+        if (initialBatchMode || initialBatchModeEnum != null || !initialBatchSubjectId.isNullOrBlank()) {
+            subMode = RegisterSubMode.BATCH_UPDATE
+        }
     }
 
     Column(modifier = modifier.fillMaxSize()) {
@@ -117,7 +139,10 @@ fun RegisterScreen(
                         },
                         modifier = Modifier.testTag("register_mode_${mode.name.lowercase()}")
                     ) {
-                        Text(mode.label, maxLines = 1)
+                        Text(
+                            text = if (mode == RegisterSubMode.STUDENT_LIST) strings.modeStudentList else strings.modeBatchEntry,
+                            maxLines = 1
+                        )
                     }
                 }
             }
@@ -129,14 +154,14 @@ fun RegisterScreen(
             ) {
                 Icon(Icons.Rounded.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(4.dp))
-                Text("Subjects")
+                Text(strings.subjectsAndExamsBtn.substringBefore(" "))
             }
             FilledTonalButton(
                 onClick = onOpenPromotionManager,
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
                 modifier = Modifier.testTag("register_open_promotion_button")
             ) {
-                Icon(Icons.Rounded.SwapVert, contentDescription = "Promotion & Rolls", modifier = Modifier.size(16.dp))
+                Icon(Icons.Rounded.SwapVert, contentDescription = strings.menuPromotionRolls, modifier = Modifier.size(16.dp))
             }
         }
 
@@ -144,11 +169,17 @@ fun RegisterScreen(
             BatchEntryScreen(
                 studentsState = studentsState,
                 subjects = subjects,
+                examConfigs = examConfigs,
+                teacherProfile = teacherProfile,
                 selectedYear = selectedYear,
+                isAdmin = isAdmin,
                 isSaving = isSaving,
                 initialClass = initialBatchClass,
                 initialSubjectId = initialBatchSubjectId,
+                initialBatchMode = initialBatchModeEnum,
                 onSaveBatch = onSaveBatch,
+                onSaveExamConfigs = onSaveExamConfigs,
+                onOpenStudentProfile = onStudentClick,
                 onAddStudent = onAddStudent,
                 onOpenFieldManager = onOpenFieldManager,
                 modifier = Modifier.weight(1f)
@@ -258,7 +289,7 @@ fun RegisterScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Showing ${filteredStudents.size} of $totalCount students ($selectedYear)",
+                            text = "Showing ${filteredStudents.size} of $totalCount ${strings.studentsCountWord} ($selectedYear)",
                             fontFamily = JetBrainsMonoFontFamily,
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant

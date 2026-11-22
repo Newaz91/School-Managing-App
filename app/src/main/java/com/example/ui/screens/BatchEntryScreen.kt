@@ -1,5 +1,8 @@
 package com.example.ui.screens
 
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,6 +25,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.FileUpload
 import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Button
@@ -39,12 +43,14 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -52,43 +58,84 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.model.ClassLevels
 import com.example.data.model.CustomFieldTypes
+import com.example.data.model.ExamDefaults
+import com.example.data.model.ExamResultCalculator
+import com.example.data.model.ExamTermConfig
+import com.example.data.model.MarksheetSubjectSpec
 import com.example.data.model.SectorOptions
 import com.example.data.model.StudentRecord
 import com.example.data.model.SubjectDefinition
+import com.example.data.model.TeacherProfile
+import com.example.export.ExcelBackupManager
+import com.example.ui.components.ClassResultsPanel
 import com.example.ui.components.EmptyRegisterState
+import com.example.ui.components.MarksheetCustomizerDialog
+import com.example.ui.i18n.AppStrings
+import com.example.ui.i18n.LocalAppStrings
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.viewmodel.UiState
 
-enum class BatchMode(val label: String) {
-    ATTENDANCE("Attendance"),
-    YEARLY("Roll, Class & Promotion"),
-    SUBJECT_FIELDS("Subject Fields")
+enum class BatchMode {
+    ATTENDANCE,
+    YEARLY,
+    SUBJECT_FIELDS,
+    EXAM_MARKS,
+    CLASS_RESULTS;
+
+    fun localizedLabel(strings: AppStrings): String = when (this) {
+        ATTENDANCE -> strings.batchAttendance
+        YEARLY -> strings.batchYearly
+        SUBJECT_FIELDS -> strings.batchSubjectFields
+        EXAM_MARKS -> strings.batchExamMarks
+        CLASS_RESULTS -> strings.batchClassResults
+    }
 }
 
 @Composable
 fun BatchEntryScreen(
     studentsState: UiState<List<StudentRecord>>,
     subjects: List<SubjectDefinition>,
+    examConfigs: List<ExamTermConfig> = ExamDefaults.defaultThreeExams(),
+    teacherProfile: TeacherProfile? = null,
     selectedYear: Int,
+    isAdmin: Boolean = true,
     isSaving: Boolean,
     initialClass: String? = null,
     initialSubjectId: String? = null,
-    onSaveBatch: (Map<String, Map<String, Any>>, onSuccess: () -> Unit) -> Unit,
+    initialBatchMode: BatchMode? = null,
+    onSaveBatch: (
+        updatesByStudentId: Map<String, Map<String, Any>>,
+        customSummary: String?,
+        customDetails: String?,
+        onSuccess: () -> Unit
+    ) -> Unit,
+    onSaveExamConfigs: (List<ExamTermConfig>, onSuccess: () -> Unit) -> Unit = { _, done -> done() },
+    onOpenStudentProfile: (StudentRecord) -> Unit = {},
     onAddStudent: () -> Unit,
     onOpenFieldManager: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val strings = LocalAppStrings.current
+
     var selectedClass by remember(initialClass) {
         mutableStateOf(initialClass?.takeIf { it in ClassLevels.ALL } ?: ClassLevels.ALL[1])
     }
-    var selectedMode by remember(initialSubjectId) {
-        mutableStateOf(if (!initialSubjectId.isNullOrBlank()) BatchMode.SUBJECT_FIELDS else BatchMode.ATTENDANCE)
+    var selectedMode by remember(initialSubjectId, initialBatchMode) {
+        mutableStateOf(
+            when {
+                initialBatchMode != null -> initialBatchMode
+                !initialSubjectId.isNullOrBlank() -> BatchMode.SUBJECT_FIELDS
+                else -> BatchMode.ATTENDANCE
+            }
+        )
     }
     val draftEdits = remember { mutableStateMapOf<String, StudentRecord>() }
 
     val allStudents = (studentsState as? UiState.Success)?.data ?: emptyList()
     val classStudents = remember(allStudents, selectedClass) {
         allStudents.filter { it.classLevel == selectedClass }
+            .sortedWith(compareBy<StudentRecord> { it.rollSortKey() }.thenBy { it.rollNumber })
     }
 
     val matchingSubjects = remember(subjects, selectedClass) {
@@ -103,6 +150,61 @@ fun BatchEntryScreen(
     }
     val activeSubject = matchingSubjects.firstOrNull { it.id == selectedSubjectId }
         ?: matchingSubjects.firstOrNull()
+
+    // Class-wise Single-Subject Exam Marks state
+    val normalizedExams = remember(examConfigs) { ExamDefaults.ensureThreeExams(examConfigs) }
+    var selectedExamIdx by remember { mutableIntStateOf(2) } // Default Final Exam
+    val activeExam = normalizedExams[selectedExamIdx.coerceIn(0, 2)]
+    val applicableExamSubjects = remember(activeExam, selectedClass) {
+        activeExam.subjects.filter { it.appliesToClass(selectedClass) }
+    }
+    var selectedExamSubjectId by remember(applicableExamSubjects) {
+        mutableStateOf(applicableExamSubjects.firstOrNull()?.subjectId ?: "")
+    }
+    val activeExamSpec = applicableExamSubjects.firstOrNull { it.subjectId == selectedExamSubjectId }
+        ?: applicableExamSubjects.firstOrNull()
+    var showExamCustomizeDialog by remember { mutableStateOf(false) }
+
+    val subjectMarksImportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        val spec = activeExamSpec
+        if (uri != null && spec != null) {
+            try {
+                val imported = ExcelBackupManager.parseSubjectMarksFromUri(
+                    context = context,
+                    uri = uri,
+                    classStudents = classStudents,
+                    subjectName = spec.subjectName
+                )
+                if (imported.isEmpty()) {
+                    Toast.makeText(
+                        context,
+                        "No matching student roll/name rows found for ${spec.subjectName}.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                } else {
+                    imported.forEach { (stuId, markVal) ->
+                        val base = draftEdits[stuId] ?: classStudents.firstOrNull { it.id == stuId }
+                        if (base != null) {
+                            draftEdits[stuId] = base.withExamMark(activeExam.examId, spec.subjectId, markVal)
+                        }
+                    }
+                    Toast.makeText(
+                        context,
+                        "Loaded ${imported.size} ${spec.subjectName} mark(s) — tap Save to commit.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(
+                    context,
+                    e.localizedMessage ?: "Failed to read marks file.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
 
     LaunchedEffect(selectedYear) {
         draftEdits.clear()
@@ -125,7 +227,7 @@ fun BatchEntryScreen(
                         FilterChip(
                             selected = selectedClass == cls,
                             onClick = { selectedClass = cls },
-                            label = { Text("$cls ($count)") },
+                            label = { Text("${strings.localizeClass(cls)} ($count)") },
                             modifier = Modifier.testTag("batch_class_${cls.lowercase().replace(" ", "_")}")
                         )
                     }
@@ -139,7 +241,7 @@ fun BatchEntryScreen(
                         FilterChip(
                             selected = selectedMode == mode,
                             onClick = { selectedMode = mode },
-                            label = { Text(mode.label) },
+                            label = { Text(mode.localizedLabel(strings)) },
                             modifier = Modifier.testTag("batch_mode_${mode.name.lowercase()}")
                         )
                     }
@@ -161,7 +263,7 @@ fun BatchEntryScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text(
-                                    text = "No subjects created for $selectedClass yet.",
+                                    text = "No subjects created for ${strings.localizeClass(selectedClass)} yet.",
                                     style = MaterialTheme.typography.bodySmall,
                                     modifier = Modifier.weight(1f)
                                 )
@@ -206,6 +308,124 @@ fun BatchEntryScreen(
                                     )
                                     FilledTonalButton(onClick = onOpenFieldManager) {
                                         Text("Add Fields")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (selectedMode == BatchMode.EXAM_MARKS) {
+                    // Exam selector
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        normalizedExams.forEachIndexed { idx, ex ->
+                            FilterChip(
+                                selected = selectedExamIdx == idx,
+                                onClick = { selectedExamIdx = idx },
+                                label = { Text(strings.localizeExamTitle(ex)) },
+                                modifier = Modifier.testTag("batch_exam_select_$idx")
+                            )
+                        }
+                    }
+
+                    if (applicableExamSubjects.isEmpty()) {
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f)
+                            ),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "No exam subjects configured for ${strings.localizeClass(selectedClass)} in ${strings.localizeExamTitle(activeExam)}.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                FilledTonalButton(onClick = { showExamCustomizeDialog = true }) {
+                                    Icon(Icons.Rounded.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(strings.subjectsAndExamsBtn)
+                                }
+                            }
+                        }
+                    } else {
+                        // Subject selector + Customize + Excel Import
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            applicableExamSubjects.forEach { spec ->
+                                FilterChip(
+                                    selected = activeExamSpec?.subjectId == spec.subjectId,
+                                    onClick = { selectedExamSubjectId = spec.subjectId },
+                                    label = {
+                                        Text("${spec.subjectName} (${spec.fullMarks}/${ExamResultCalculator.effectivePassMarks(spec)})")
+                                    },
+                                    modifier = Modifier.testTag("batch_exam_subject_${spec.subjectId}")
+                                )
+                            }
+                            OutlinedButton(
+                                onClick = { showExamCustomizeDialog = true },
+                                modifier = Modifier.height(36.dp)
+                            ) {
+                                Icon(Icons.Rounded.Tune, contentDescription = null, modifier = Modifier.size(15.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text(strings.subjectsAndExamsBtn, style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+
+                        if (activeExamSpec != null) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = "${strings.localizeClass(selectedClass)} • ${strings.localizeExamTitle(activeExam)} • ${activeExamSpec.subjectName} (${strings.fullMarksLabel}: ${activeExamSpec.fullMarks}, ${strings.passMarksLabel}: ${ExamResultCalculator.effectivePassMarks(activeExamSpec)})",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = strings.examMarksSheetHint,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    OutlinedButton(
+                                        onClick = {
+                                            subjectMarksImportLauncher.launch(
+                                                arrayOf(
+                                                    ExcelBackupManager.MIME_XLSX,
+                                                    "text/csv",
+                                                    "text/comma-separated-values",
+                                                    "application/vnd.ms-excel",
+                                                    "*/*"
+                                                )
+                                            )
+                                        },
+                                        enabled = classStudents.isNotEmpty(),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(44.dp)
+                                            .testTag("batch_import_subject_marks_button")
+                                    ) {
+                                        Icon(Icons.Rounded.FileUpload, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("${strings.importSubjectExcelCsv} (${activeExamSpec.subjectName})")
                                     }
                                 }
                             }
@@ -265,11 +485,11 @@ fun BatchEntryScreen(
                                 },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text("Mark All $selectedClass Students as Promoted")
+                                Text("Mark All ${strings.localizeClass(selectedClass)} Students as Promoted")
                             }
                         }
 
-                        BatchMode.SUBJECT_FIELDS -> Unit
+                        BatchMode.SUBJECT_FIELDS, BatchMode.EXAM_MARKS, BatchMode.CLASS_RESULTS -> Unit
                     }
                 }
             }
@@ -295,6 +515,17 @@ fun BatchEntryScreen(
                             onAddStudent = onAddStudent,
                             onClearFilters = {}
                         )
+                    } else if (selectedMode == BatchMode.CLASS_RESULTS) {
+                        ClassResultsPanel(
+                            selectedClass = selectedClass,
+                            allStudents = allStudents,
+                            examConfigs = normalizedExams,
+                            teacherProfile = teacherProfile,
+                            selectedYear = selectedYear,
+                            onSelectStudent = onOpenStudentProfile,
+                            onOpenExamSetup = { showExamCustomizeDialog = true },
+                            modifier = Modifier.weight(1f)
+                        )
                     } else {
                         LazyColumn(
                             modifier = Modifier.fillMaxSize(),
@@ -317,6 +548,8 @@ fun BatchEntryScreen(
                                     student = current,
                                     mode = selectedMode,
                                     activeSubject = activeSubject,
+                                    activeExamId = activeExam.examId,
+                                    activeExamSpec = activeExamSpec,
                                     isDirty = isDirty,
                                     onUpdate = { updated ->
                                         draftEdits[original.id] = updated
@@ -329,7 +562,7 @@ fun BatchEntryScreen(
             }
         }
 
-        if (draftEdits.isNotEmpty()) {
+        if (draftEdits.isNotEmpty() && selectedMode != BatchMode.CLASS_RESULTS) {
             Surface(
                 tonalElevation = 6.dp,
                 shadowElevation = 8.dp,
@@ -349,32 +582,47 @@ fun BatchEntryScreen(
                         onClick = { draftEdits.clear() },
                         enabled = !isSaving
                     ) {
-                        Text("Discard")
+                        Text(strings.discardButton)
                     }
                     Button(
                         onClick = {
-                            val payload = draftEdits.mapValues { (_, s) ->
-                                val cleanSubjectValues = s.subjectValues.entries
-                                    .filter { it.key.isNotBlank() && it.value.isNotBlank() }
-                                    .take(150)
-                                    .associate { it.key.trim().take(90) to it.value.trim().take(200) }
-                                val cleanNotes = s.sectorNotes.entries
-                                    .filter { it.key.isNotBlank() && it.value.isNotBlank() }
-                                    .take(150)
-                                    .associate { it.key.trim().take(90) to it.value.trim().take(300) }
-                                mapOf(
-                                    "rollNumber" to s.rollNumber.trim().ifBlank { "1" }.take(20),
-                                    "classLevel" to s.classLevel.trim().ifBlank { "Class 1" }.take(40),
-                                    "section" to s.section.trim().take(30),
-                                    "totalSchoolDays" to s.totalSchoolDays.coerceIn(0L, 366L),
-                                    "daysPresent" to s.daysPresent.coerceIn(0L, 366L),
-                                    "promotionStatus" to s.promotionStatus.trim().ifBlank { "Studying" }.take(40),
-                                    "subjectValues" to cleanSubjectValues,
-                                    "sectorNotes" to cleanNotes
-                                )
-                            }
-                            onSaveBatch(payload) {
-                                draftEdits.clear()
+                            if (selectedMode == BatchMode.EXAM_MARKS && activeExamSpec != null) {
+                                val markKey = "${activeExam.examId}__${activeExamSpec.subjectId}"
+                                val payload = draftEdits.mapValues { (_, s) ->
+                                    val cleanMark = s.examMarkRaw(activeExam.examId, activeExamSpec.subjectId)
+                                        .trim()
+                                        .take(20)
+                                    mapOf<String, Any>("examResults.$markKey" to cleanMark)
+                                }
+                                val summaryText = "$selectedClass • ${activeExam.title} • ${activeExamSpec.subjectName} (${draftEdits.size} students)"
+                                val detailsText = "Class-wise single-subject marks submission (other subjects preserved)"
+                                onSaveBatch(payload, summaryText, detailsText) {
+                                    draftEdits.clear()
+                                }
+                            } else {
+                                val payload = draftEdits.mapValues { (_, s) ->
+                                    val cleanSubjectValues = s.subjectValues.entries
+                                        .filter { it.key.isNotBlank() && it.value.isNotBlank() }
+                                        .take(150)
+                                        .associate { it.key.trim().take(90) to it.value.trim().take(200) }
+                                    val cleanNotes = s.sectorNotes.entries
+                                        .filter { it.key.isNotBlank() && it.value.isNotBlank() }
+                                        .take(150)
+                                        .associate { it.key.trim().take(90) to it.value.trim().take(300) }
+                                    mapOf(
+                                        "rollNumber" to s.rollNumber.trim().ifBlank { "1" }.take(20),
+                                        "classLevel" to s.classLevel.trim().ifBlank { "Class 1" }.take(40),
+                                        "section" to s.section.trim().take(30),
+                                        "totalSchoolDays" to s.totalSchoolDays.coerceIn(0L, 366L),
+                                        "daysPresent" to s.daysPresent.coerceIn(0L, 366L),
+                                        "promotionStatus" to s.promotionStatus.trim().ifBlank { "Studying" }.take(40),
+                                        "subjectValues" to cleanSubjectValues,
+                                        "sectorNotes" to cleanNotes
+                                    )
+                                }
+                                onSaveBatch(payload, null, null) {
+                                    draftEdits.clear()
+                                }
                             }
                         },
                         enabled = !isSaving,
@@ -392,12 +640,35 @@ fun BatchEntryScreen(
                         } else {
                             Icon(Icons.Rounded.Save, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text("Save ${draftEdits.size} Student(s)")
+                            val saveTxt = if (selectedMode == BatchMode.EXAM_MARKS && activeExamSpec != null) {
+                                if (isAdmin) "${strings.saveClassSubjectMarks} (${draftEdits.size})"
+                                else "${strings.submitClassSubjectMarks} (${draftEdits.size})"
+                            } else {
+                                "${strings.saveButton} ${draftEdits.size} ${strings.studentsCountWord}"
+                            }
+                            Text(saveTxt, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 }
             }
         }
+    }
+
+    if (showExamCustomizeDialog) {
+        MarksheetCustomizerDialog(
+            examConfigs = normalizedExams,
+            initialExamIndex = selectedExamIdx,
+            defaultClassScope = selectedClass,
+            schoolSubjects = subjects,
+            isAdmin = isAdmin,
+            isSaving = isSaving,
+            onDismiss = { showExamCustomizeDialog = false },
+            onSave = { updated ->
+                onSaveExamConfigs(updated) {
+                    showExamCustomizeDialog = false
+                }
+            }
+        )
     }
 }
 
@@ -406,9 +677,13 @@ private fun BatchStudentRowCard(
     student: StudentRecord,
     mode: BatchMode,
     activeSubject: SubjectDefinition?,
+    activeExamId: String,
+    activeExamSpec: MarksheetSubjectSpec?,
     isDirty: Boolean,
     onUpdate: (StudentRecord) -> Unit
 ) {
+    val strings = LocalAppStrings.current
+
     Card(
         colors = CardDefaults.cardColors(
             containerColor = if (isDirty) {
@@ -445,14 +720,15 @@ private fun BatchStudentRowCard(
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = student.studentNameEn,
+                        text = student.primaryName(),
                         style = MaterialTheme.typography.titleSmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    if (student.studentNameBn.isNotBlank()) {
+                    val secondaryName = student.secondaryName()
+                    if (secondaryName.isNotBlank()) {
                         Text(
-                            text = student.studentNameBn,
+                            text = secondaryName,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1
@@ -541,7 +817,7 @@ private fun BatchStudentRowCard(
                                 FilterChip(
                                     selected = student.classLevel == cls,
                                     onClick = { onUpdate(student.copy(classLevel = cls)) },
-                                    label = { Text(cls) }
+                                    label = { Text(strings.localizeClass(cls)) }
                                 )
                             }
                         }
@@ -553,7 +829,7 @@ private fun BatchStudentRowCard(
                                 FilterChip(
                                     selected = student.promotionStatus == status,
                                     onClick = { onUpdate(student.copy(promotionStatus = status)) },
-                                    label = { Text(status) }
+                                    label = { Text(strings.localizePromotionStatus(status)) }
                                 )
                             }
                         }
@@ -638,6 +914,73 @@ private fun BatchStudentRowCard(
                         }
                     }
                 }
+
+                BatchMode.EXAM_MARKS -> {
+                    if (activeExamSpec == null) {
+                        Text(
+                            text = "Configure an Exam Subject above to enter marks.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        val rawMark = student.examMarkRaw(activeExamId, activeExamSpec.subjectId)
+                        val numeric = rawMark.trim().toDoubleOrNull()
+                        val passReq = ExamResultCalculator.effectivePassMarks(activeExamSpec)
+                        val (passed, grade, _) = ExamResultCalculator.evaluateGrade(
+                            obtained = numeric,
+                            fullMarks = activeExamSpec.fullMarks,
+                            passMarks = passReq
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = rawMark,
+                                onValueChange = { input ->
+                                    val filtered = input.filter { it.isDigit() || it == '.' }
+                                    onUpdate(student.withExamMark(activeExamId, activeExamSpec.subjectId, filtered))
+                                },
+                                label = {
+                                    Text("${activeExamSpec.subjectName} (/${activeExamSpec.fullMarks})")
+                                },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                singleLine = true,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("batch_exam_mark_input_${student.id}")
+                            )
+                            Surface(
+                                color = when {
+                                    numeric == null -> MaterialTheme.colorScheme.surfaceContainerHigh
+                                    passed -> MaterialTheme.colorScheme.primaryContainer
+                                    else -> MaterialTheme.colorScheme.errorContainer
+                                },
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text(
+                                    text = when {
+                                        numeric == null -> "—"
+                                        passed -> "$grade • ${strings.resultPass}"
+                                        else -> "$grade • ${strings.resultFail}"
+                                    },
+                                    fontFamily = JetBrainsMonoFontFamily,
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = when {
+                                        numeric == null -> MaterialTheme.colorScheme.onSurfaceVariant
+                                        passed -> MaterialTheme.colorScheme.onPrimaryContainer
+                                        else -> MaterialTheme.colorScheme.onErrorContainer
+                                    },
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                BatchMode.CLASS_RESULTS -> Unit
             }
         }
     }

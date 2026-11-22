@@ -454,7 +454,7 @@ class SchoolRepository(
                         compareBy<StudentRecord> { ClassLevels.sortOrder(it.classLevel) }
                             .thenBy { it.rollSortKey() }
                             .thenBy { it.rollNumber }
-                            .thenBy { it.studentNameEn.lowercase() }
+                            .thenBy { it.primaryName().lowercase() }
                     )
                 }
                 .catch { error -> throw handleFlowError(error, OperationType.LIST, path) }
@@ -469,7 +469,9 @@ class SchoolRepository(
         val cleanId = requireSchoolId(schoolId)
         val path = "schools/$cleanId/students"
         return try {
-            require(student.studentNameEn.isNotBlank()) { "Student name is required." }
+            require(student.studentNameBn.isNotBlank() || student.studentNameEn.isNotBlank()) {
+                "Student Name (Bangla) is required."
+            }
             require(student.rollNumber.isNotBlank()) { "Roll number is required." }
             val colRef = schoolDoc(cleanId).collection("students")
             val docRef = if (student.id.isNotBlank()) colRef.document(student.id) else colRef.document()
@@ -534,12 +536,20 @@ class SchoolRepository(
             entries.chunked(400).forEach { chunk ->
                 val batch = db.batch()
                 chunk.forEach { (stuId, rawFields) ->
-                    val fields = rawFields.toMutableMap().apply {
-                        if (actorName.isNotBlank()) {
-                            put("lastUpdatedByName", actorName.trim().take(100))
+                    val fields = mutableMapOf<String, Any>()
+                    rawFields.forEach { (k, v) ->
+                        if ((k.startsWith("examResults.") || k.startsWith("subjectValues.")) &&
+                            v is String && v.isBlank()
+                        ) {
+                            fields[k] = FieldValue.delete()
+                        } else {
+                            fields[k] = v
                         }
-                        put("updatedAt", FieldValue.serverTimestamp())
                     }
+                    if (actorName.isNotBlank()) {
+                        fields["lastUpdatedByName"] = actorName.trim().take(100)
+                    }
+                    fields["updatedAt"] = FieldValue.serverTimestamp()
                     batch.update(col.document(stuId), fields)
                 }
                 batch.commit().await()
@@ -579,7 +589,7 @@ class SchoolRepository(
                 .await()
             val existingKeys = existingInTargetSnap.documents.mapNotNull { doc ->
                 val s = doc.toObject(StudentRecord::class.java) ?: return@mapNotNull null
-                "${s.studentNameEn.trim().lowercase()}|${s.fatherNameEn.trim().lowercase()}|${s.dateOfBirth.trim()}"
+                "${s.primaryName().trim().lowercase()}|${s.fatherNameEn.trim().lowercase()}|${s.dateOfBirth.trim()}"
             }.toMutableSet()
 
             var affectedCount = 0
@@ -605,7 +615,7 @@ class SchoolRepository(
                     return@forEach
                 }
 
-                val key = "${student.studentNameEn.trim().lowercase()}|${student.fatherNameEn.trim().lowercase()}|${student.dateOfBirth.trim()}"
+                val key = "${student.primaryName().trim().lowercase()}|${student.fatherNameEn.trim().lowercase()}|${student.dateOfBirth.trim()}"
                 if (existingKeys.contains(key)) return@forEach
                 existingKeys.add(key)
 
@@ -684,14 +694,15 @@ class SchoolRepository(
         existingStudents: List<StudentRecord>,
         subjectsToUpsert: List<SubjectDefinition>,
         customFieldsToUpsert: List<CustomFieldDef>,
-        actorName: String
+        actorName: String,
+        replaceMatchedExisting: Boolean = true
     ): Result<Triple<Int, Int, Int>> {
         val cleanId = requireSchoolId(schoolId)
         val path = "schools/$cleanId"
         return try {
             val schoolRef = schoolDoc(cleanId)
             val existingByMatchKey = existingStudents.associateBy { s ->
-                "${s.academicYear}|${s.classLevel.lowercase()}|${s.rollNumber.trim().lowercase()}|${s.studentNameEn.trim().lowercase()}"
+                "${s.academicYear}|${s.classLevel.lowercase()}|${s.rollNumber.trim().lowercase()}|${s.primaryName().trim().lowercase()}"
             }
 
             // Upsert subjects
@@ -722,9 +733,9 @@ class SchoolRepository(
             students.chunked(350).forEach { chunk ->
                 val batch = db.batch()
                 chunk.forEach { incoming ->
-                    if (incoming.studentNameEn.isBlank()) return@forEach
-                    val matchKey = "${incoming.academicYear}|${incoming.classLevel.lowercase()}|${incoming.rollNumber.trim().lowercase()}|${incoming.studentNameEn.trim().lowercase()}"
-                    val existing = existingByMatchKey[matchKey]
+                    if (incoming.primaryName().isBlank()) return@forEach
+                    val matchKey = "${incoming.academicYear}|${incoming.classLevel.lowercase()}|${incoming.rollNumber.trim().lowercase()}|${incoming.primaryName().trim().lowercase()}"
+                    val existing = if (replaceMatchedExisting) existingByMatchKey[matchKey] else null
                     val normalizedIncoming = incoming.copy(
                         rollNumber = incoming.rollNumber.ifBlank { "01" },
                         lastUpdatedByName = actorName.ifBlank { "Backup Restore" }
@@ -1299,7 +1310,7 @@ class SchoolRepository(
             val existingSnap = schoolRef.collection("students").get().await()
             val existingKeys = existingSnap.documents.mapNotNull { doc ->
                 val s = doc.toObject(StudentRecord::class.java) ?: return@mapNotNull null
-                "${s.academicYear}|${s.classLevel.lowercase()}|${s.rollNumber.trim().lowercase()}|${s.studentNameEn.trim().lowercase()}"
+                "${s.academicYear}|${s.classLevel.lowercase()}|${s.rollNumber.trim().lowercase()}|${s.primaryName().trim().lowercase()}"
             }.toMutableSet()
 
             var imported = 0
@@ -1310,8 +1321,8 @@ class SchoolRepository(
             legacyStudents.chunked(350).forEach { chunk ->
                 val batch = db.batch()
                 chunk.forEach { s ->
-                    if (s.studentNameEn.isBlank()) return@forEach
-                    val k = "${s.academicYear}|${s.classLevel.lowercase()}|${s.rollNumber.trim().lowercase()}|${s.studentNameEn.trim().lowercase()}"
+                    if (s.primaryName().isBlank()) return@forEach
+                    val k = "${s.academicYear}|${s.classLevel.lowercase()}|${s.rollNumber.trim().lowercase()}|${s.primaryName().trim().lowercase()}"
                     if (!existingKeys.contains(k)) {
                         existingKeys.add(k)
                         batch.set(stuCol.document(), s.toCreateMapForSchool(cleanId, actorName))

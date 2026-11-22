@@ -28,12 +28,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AddBusiness
 import androidx.compose.material.icons.rounded.AdminPanelSettings
 import androidx.compose.material.icons.rounded.Badge
+import androidx.compose.material.icons.rounded.Contacts
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Phone
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.School
 import androidx.compose.material.icons.rounded.Sms
+import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -80,7 +82,11 @@ import com.example.data.model.SchoolWorkspace
 import com.example.data.model.TeacherProfile
 import com.example.data.model.generateUniqueSchoolNumber
 import com.example.data.model.normalizeSchoolId
+import com.example.ui.i18n.AppLanguage
+import com.example.ui.i18n.LocalAppLanguage
+import com.example.ui.i18n.LocalAppStrings
 import com.example.ui.theme.JetBrainsMonoFontFamily
+import com.example.util.rememberContactPhonePicker
 import kotlinx.coroutines.launch
 import kotlin.random.Random
 
@@ -107,9 +113,12 @@ fun SchoolEntryScreen(
     initialTeacherPhone: String = "",
     recentSchools: List<String>,
     repository: SchoolRepository,
+    onToggleLanguage: () -> Unit = {},
     onEnteredSchool: (schoolId: String, teacherName: String, teacherPhone: String) -> Unit
 ) {
     val context = LocalContext.current
+    val currentLang = LocalAppLanguage.current
+    val strings = LocalAppStrings.current
     val credsPrefs = remember(context) {
         context.applicationContext.getSharedPreferences("my_school_teacher_auth", Context.MODE_PRIVATE)
     }
@@ -430,6 +439,31 @@ fun SchoolEntryScreen(
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = strings.appName,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        FilterChip(
+                            selected = currentLang == AppLanguage.BN,
+                            onClick = onToggleLanguage,
+                            leadingIcon = {
+                                Icon(Icons.Rounded.Translate, contentDescription = null, modifier = Modifier.size(16.dp))
+                            },
+                            label = {
+                                Text(if (currentLang == AppLanguage.EN) "EN / বাংলা" else "বাংলা / EN")
+                            },
+                            modifier = Modifier.testTag("entry_language_toggle")
+                        )
+                    }
+                }
                 item {
                     if (isWide) {
                         Row(
@@ -901,12 +935,26 @@ private fun SchoolEntryFormCard(
                     .testTag("entry_teacher_name_input")
             )
 
+            val pickContactPhone = rememberContactPhonePicker { picked ->
+                onPhoneNumberChange(picked)
+            }
             OutlinedTextField(
                 value = phoneNumber,
                 onValueChange = onPhoneNumberChange,
-                label = { Text("Phone Number") },
+                label = { Text(LocalAppStrings.current.phoneNumberLabel) },
                 placeholder = { Text("e.g. 017XXXXXXXX") },
                 leadingIcon = { Icon(Icons.Rounded.Phone, contentDescription = null) },
+                trailingIcon = {
+                    IconButton(
+                        onClick = pickContactPhone,
+                        modifier = Modifier.testTag("entry_pick_contact_phone")
+                    ) {
+                        Icon(
+                            Icons.Rounded.Contacts,
+                            contentDescription = LocalAppStrings.current.pickFromContacts
+                        )
+                    }
+                },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                 singleLine = true,
                 modifier = Modifier

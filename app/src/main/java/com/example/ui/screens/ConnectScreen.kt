@@ -539,7 +539,8 @@ private fun MessageParentsContent(
         val q = studentSearch.trim().lowercase()
         if (q.isBlank()) allStudents.take(25)
         else allStudents.filter {
-            it.studentNameEn.lowercase().contains(q) ||
+            it.studentNameBn.lowercase().contains(q) ||
+                it.studentNameEn.lowercase().contains(q) ||
                 it.rollNumber.lowercase().contains(q) ||
                 it.guardianPhone.contains(q)
         }.take(25)
@@ -563,7 +564,7 @@ private fun MessageParentsContent(
     }
 
     val targetLabel = when (audience) {
-        ParentAudience.INDIVIDUAL -> selectedStudent?.let { "${it.studentNameEn} (${it.classLevel}, Roll ${it.rollNumber})" }
+        ParentAudience.INDIVIDUAL -> selectedStudent?.let { "${it.primaryName()} (${it.classLevel}, Roll ${it.rollNumber})" }
             ?: "Individual Parent"
         ParentAudience.ALL_SCHOOL -> "Whole School Parents (${allStudents.size} students)"
         ParentAudience.CLASS -> "$targetClass Parents (${allStudents.count { it.classLevel == targetClass }} students)"
@@ -654,7 +655,7 @@ private fun MessageParentsContent(
                                                     modifier = Modifier.size(16.dp)
                                                 )
                                             },
-                                            label = { Text("${s.studentNameEn} (${ClassLevels.shortLabel(s.classLevel)}-${s.rollNumber})") }
+                                            label = { Text("${s.primaryName()} (${ClassLevels.shortLabel(s.classLevel)}-${s.rollNumber})") }
                                         )
                                     }
                                 }
