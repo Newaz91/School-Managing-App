@@ -40,7 +40,7 @@ object AppPreferences {
         prefs(context).edit().putString(KEY_APP_LANGUAGE, if (code == "bn") "bn" else "en").apply()
     }
 
-    fun loadSession(context: Context, currentVersionCode: Int = 5): LocalSchoolSession {
+    fun loadSession(context: Context, currentVersionCode: Int = 6): LocalSchoolSession {
         val p = prefs(context)
         var devId = p.getString(KEY_DEVICE_ID, null).orEmpty()
         if (devId.isBlank()) {
@@ -58,7 +58,7 @@ object AppPreferences {
                 "Updated — Teachers Panel refreshed; all student & subject data preserved. First teacher to sign in becomes Admin."
             } else {
                 // Upgrades from v1.2+ preserve login session and all existing school data seamlessly
-                "Updated to v1.4 — All existing students, marks, attendance & teacher accounts preserved."
+                "Updated to v1.5 — Offline sync, 3-term Continuous/Summative marksheet & in-app Update ready."
             }
         } else null
         if (lastVersion != currentVersionCode) {

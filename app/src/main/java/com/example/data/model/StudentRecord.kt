@@ -149,11 +149,46 @@ data class StudentRecord(
 
     fun examMarkKey(examId: String, subjectId: String): String = "${examId}__${subjectId}"
 
-    fun examMarkRaw(examId: String, subjectId: String): String =
-        examResults[examMarkKey(examId, subjectId)] ?: ""
+    fun examContinuousKey(examId: String, subjectId: String): String = "${examId}__${subjectId}__cont"
 
-    fun examMarkDouble(examId: String, subjectId: String): Double? =
-        examMarkRaw(examId, subjectId).trim().toDoubleOrNull()
+    fun examSummativeKey(examId: String, subjectId: String): String = "${examId}__${subjectId}__sum"
+
+    fun examContinuousRaw(examId: String, subjectId: String): String =
+        examResults[examContinuousKey(examId, subjectId)] ?: ""
+
+    fun examSummativeRaw(examId: String, subjectId: String): String =
+        examResults[examSummativeKey(examId, subjectId)] ?: ""
+
+    fun examContinuousDouble(examId: String, subjectId: String): Double? =
+        examContinuousRaw(examId, subjectId).trim().toDoubleOrNull()
+
+    fun examSummativeDouble(examId: String, subjectId: String): Double? =
+        examSummativeRaw(examId, subjectId).trim().toDoubleOrNull()
+
+    fun examMarkRaw(examId: String, subjectId: String): String {
+        val cont = examContinuousDouble(examId, subjectId)
+        val sum = examSummativeDouble(examId, subjectId)
+        if (cont != null || sum != null) {
+            val total = (cont ?: 0.0) + (sum ?: 0.0)
+            val rounded = total.roundToInt().toDouble()
+            return if (kotlin.math.abs(total - rounded) < 0.01) {
+                rounded.toInt().toString()
+            } else {
+                String.format(java.util.Locale.US, "%.1f", total)
+            }
+        }
+        return examResults[examMarkKey(examId, subjectId)] ?: ""
+    }
+
+    fun examMarkDouble(examId: String, subjectId: String): Double? {
+        val cont = examContinuousDouble(examId, subjectId)
+        val sum = examSummativeDouble(examId, subjectId)
+        return if (cont != null || sum != null) {
+            (cont ?: 0.0) + (sum ?: 0.0)
+        } else {
+            examResults[examMarkKey(examId, subjectId)]?.trim()?.toDoubleOrNull()
+        }
+    }
 
     fun withExamMark(examId: String, subjectId: String, rawValue: String): StudentRecord {
         val next = examResults.toMutableMap()
@@ -163,6 +198,39 @@ data class StudentRecord(
             next.remove(key)
         } else {
             next[key] = clean.take(20)
+        }
+        return copy(examResults = next)
+    }
+
+    fun withExamTermParts(
+        examId: String,
+        subjectId: String,
+        contRaw: String,
+        sumRaw: String
+    ): StudentRecord {
+        val next = examResults.toMutableMap()
+        val contKey = examContinuousKey(examId, subjectId)
+        val sumKey = examSummativeKey(examId, subjectId)
+        val totalKey = examMarkKey(examId, subjectId)
+
+        val cleanCont = contRaw.trim().take(20)
+        val cleanSum = sumRaw.trim().take(20)
+
+        if (cleanCont.isBlank()) next.remove(contKey) else next[contKey] = cleanCont
+        if (cleanSum.isBlank()) next.remove(sumKey) else next[sumKey] = cleanSum
+
+        val contNum = cleanCont.toDoubleOrNull()
+        val sumNum = cleanSum.toDoubleOrNull()
+        if (contNum != null || sumNum != null) {
+            val total = (contNum ?: 0.0) + (sumNum ?: 0.0)
+            val rounded = total.roundToInt().toDouble()
+            next[totalKey] = if (kotlin.math.abs(total - rounded) < 0.01) {
+                rounded.toInt().toString()
+            } else {
+                String.format(java.util.Locale.US, "%.1f", total)
+            }
+        } else if (cleanCont.isBlank() && cleanSum.isBlank()) {
+            next.remove(totalKey)
         }
         return copy(examResults = next)
     }
@@ -257,7 +325,7 @@ data class StudentRecord(
             .associate { it.key.trim().take(90) to it.value.trim().take(300) }
         val cleanExams = examResults.entries
             .filter { it.key.isNotBlank() && it.value.isNotBlank() }
-            .take(150)
+            .take(350)
             .associate { it.key.trim().take(90) to it.value.trim().take(20) }
 
         return mapOf(

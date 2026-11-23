@@ -529,62 +529,75 @@ object ReportExporter {
         student: StudentRecord,
         exam: com.example.data.model.ExamTermConfig,
         summary: com.example.data.model.StudentExamResultSummary,
+        examConfigs: List<com.example.data.model.ExamTermConfig>,
         teacherProfile: TeacherProfile?,
         strings: com.example.ui.i18n.AppStrings
     ) {
-        val scale = pageWidth / 595f
-        val margin = 36f * scale
+        val scale = pageWidth / 842f
+        val margin = 28f * scale
         val contentWidth = pageWidth - margin * 2f
+        val normalizedExams = com.example.data.model.ExamDefaults.ensureThreeExams(examConfigs)
+        val combinedTotals = com.example.data.model.ExamResultCalculator.computeCombinedThreeTermTotals(
+            student = student,
+            examConfigs = normalizedExams,
+            activeExamId = exam.examId
+        )
 
         val schoolPaint = android.text.TextPaint().apply {
             color = Color.rgb(0, 106, 78)
-            textSize = 14f * scale
+            textSize = 13.5f * scale
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             isAntiAlias = true
         }
         val examTitlePaint = android.text.TextPaint().apply {
             color = Color.rgb(18, 22, 20)
-            textSize = 16.5f * scale
+            textSize = 15.5f * scale
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             isAntiAlias = true
         }
         val metaPaint = android.text.TextPaint().apply {
             color = Color.rgb(55, 62, 58)
-            textSize = 10.5f * scale
+            textSize = 10f * scale
             isAntiAlias = true
         }
         val metaBoldPaint = android.text.TextPaint().apply {
             color = Color.rgb(20, 24, 22)
-            textSize = 10.5f * scale
+            textSize = 10f * scale
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             isAntiAlias = true
         }
         val tableHeaderText = android.text.TextPaint().apply {
             color = Color.WHITE
-            textSize = 9.5f * scale
+            textSize = 8.4f * scale
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            isAntiAlias = true
+        }
+        val subHeaderText = android.text.TextPaint().apply {
+            color = Color.rgb(12, 48, 36)
+            textSize = 7.8f * scale
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             isAntiAlias = true
         }
         val cellText = android.text.TextPaint().apply {
             color = Color.rgb(25, 28, 26)
-            textSize = 9.5f * scale
+            textSize = 8.4f * scale
             isAntiAlias = true
         }
         val cellBoldText = android.text.TextPaint().apply {
             color = Color.rgb(15, 20, 18)
-            textSize = 9.8f * scale
+            textSize = 8.6f * scale
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             isAntiAlias = true
         }
         val passPaint = android.text.TextPaint().apply {
             color = Color.rgb(0, 106, 78)
-            textSize = 9.5f * scale
+            textSize = 8.4f * scale
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             isAntiAlias = true
         }
         val failPaint = android.text.TextPaint().apply {
             color = Color.rgb(186, 26, 26)
-            textSize = 9.5f * scale
+            textSize = 8.4f * scale
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             isAntiAlias = true
         }
@@ -592,10 +605,14 @@ object ReportExporter {
         val borderPaint = Paint().apply {
             color = Color.rgb(175, 185, 180)
             style = Paint.Style.STROKE
-            strokeWidth = 1f * scale
+            strokeWidth = 0.9f * scale
         }
         val headerBgPaint = Paint().apply {
             color = Color.rgb(0, 106, 78)
+            style = Paint.Style.FILL
+        }
+        val subHeaderBgPaint = Paint().apply {
+            color = Color.rgb(222, 238, 231)
             style = Paint.Style.FILL
         }
         val infoBgPaint = Paint().apply {
@@ -613,11 +630,10 @@ object ReportExporter {
 
         canvas.drawColor(Color.WHITE)
 
-        var y = 34f * scale
+        var y = 26f * scale
         val schoolName = teacherProfile?.schoolName?.ifBlank { strings.appName } ?: strings.appName
-        val localizedExam = strings.localizeExamTitle(exam)
 
-        // 1. TOP CENTER: School Name + Prominently Centered Exam Name
+        // 1. TOP CENTER: School Name + 3-Term Marksheet Title
         drawTextInCell(
             canvas = canvas,
             text = "$schoolName  •  ${student.academicYear}",
@@ -627,177 +643,198 @@ object ReportExporter {
             paint = schoolPaint,
             alignment = android.text.Layout.Alignment.ALIGN_CENTER
         )
-        y += 20f * scale
+        y += 18f * scale
 
         drawTextInCell(
             canvas = canvas,
-            text = localizedExam,
+            text = "${strings.threeExamMarksheetTitle} (${strings.localizeExamTitle(exam)})",
             x = margin,
             yTop = y,
             width = contentWidth,
             paint = examTitlePaint,
             alignment = android.text.Layout.Alignment.ALIGN_CENTER
         )
-        y += 24f * scale
+        y += 22f * scale
 
-        canvas.drawLine(margin + 60f * scale, y, pageWidth - margin - 60f * scale, y, borderPaint)
-        y += 12f * scale
-
-        // 2. BELOW EXAM NAME: Student Name, Class Name, Roll Number
-        val infoBoxHeight = 56f * scale
+        // 2. Student Info Strip
+        val infoBoxHeight = 42f * scale
         val infoRect = android.graphics.RectF(margin, y, pageWidth - margin, y + infoBoxHeight)
-        canvas.drawRoundRect(infoRect, 8f * scale, 8f * scale, infoBgPaint)
-        canvas.drawRoundRect(infoRect, 8f * scale, 8f * scale, borderPaint)
+        canvas.drawRoundRect(infoRect, 6f * scale, 6f * scale, infoBgPaint)
+        canvas.drawRoundRect(infoRect, 6f * scale, 6f * scale, borderPaint)
 
-        val colHalf = contentWidth / 2f
         val displayName = student.combinedDisplayName()
-        drawTextInCell(
-            canvas,
-            "${strings.resultSheetStudentName}: $displayName",
-            margin + 12f * scale,
-            y + 10f * scale,
-            contentWidth - 24f * scale,
-            metaBoldPaint
-        )
         val classDisplay = strings.localizeClass(student.classLevel) +
             if (student.section.isNotBlank()) " (${student.section})" else ""
         drawTextInCell(
             canvas,
+            "${strings.resultSheetStudentName}: $displayName",
+            margin + 10f * scale,
+            y + 6f * scale,
+            contentWidth * 0.56f,
+            metaBoldPaint
+        )
+        drawTextInCell(
+            canvas,
             "${strings.resultSheetClassName}: $classDisplay",
-            margin + 12f * scale,
-            y + 32f * scale,
-            colHalf - 16f * scale,
+            margin + 10f * scale,
+            y + 23f * scale,
+            contentWidth * 0.56f,
             metaPaint
         )
         drawTextInCell(
             canvas,
             "${strings.resultSheetRollNo}: ${student.rollNumber.ifBlank { "—" }}",
-            margin + colHalf,
-            y + 32f * scale,
-            colHalf - 12f * scale,
+            margin + contentWidth * 0.58f,
+            y + 13f * scale,
+            contentWidth * 0.40f,
             metaBoldPaint,
             android.text.Layout.Alignment.ALIGN_OPPOSITE
         )
-        y += infoBoxHeight + 16f * scale
+        y += infoBoxHeight + 12f * scale
 
-        // 3. MARKSHEET TABLE CHART
-        val colWidths = floatArrayOf(
-            contentWidth * 0.31f, // Subject
-            contentWidth * 0.11f, // Full
-            contentWidth * 0.11f, // Pass
-            contentWidth * 0.13f, // Highest
-            contentWidth * 0.14f, // Obtained
-            contentWidth * 0.20f  // Grade / Status
-        )
-        val headerHeight = 28f * scale
-        val rowHeight = 26f * scale
+        // 3. 2-TIER MARKSHEET TABLE (No Pass Column; 3 Cols per Term + 3-Term Average + Grade)
+        val subjW = contentWidth * 0.150f
+        val fullW = contentWidth * 0.055f
+        val contW = contentWidth * 0.068f
+        val sumW = contentWidth * 0.068f
+        val totW = contentWidth * 0.074f
+        val termW = contW + sumW + totW // 0.210f * 3 = 0.630f
+        val avgW = contentWidth * 0.075f
+        val gradeW = contentWidth * 0.090f
 
-        // Header Row
-        canvas.drawRect(margin, y, pageWidth - margin, y + headerHeight, headerBgPaint)
-        canvas.drawRect(margin, y, pageWidth - margin, y + headerHeight, borderPaint)
-        val headers = listOf(
-            strings.resultSheetSubjectCol,
-            strings.resultSheetFullCol,
-            strings.resultSheetPassCol,
-            strings.resultSheetHighestCol,
-            strings.resultSheetObtainedCol,
-            strings.resultSheetGradeCol
+        val leafColWidths = floatArrayOf(
+            subjW, fullW,
+            contW, sumW, totW,
+            contW, sumW, totW,
+            contW, sumW, totW,
+            avgW, gradeW
         )
-        var cx = margin
-        headers.forEachIndexed { idx, h ->
+
+        val tier1H = 24f * scale
+        val tier2H = 22f * scale
+        val rowHeight = 23f * scale
+
+        // Tier 1 Header Row
+        canvas.drawRect(margin, y, pageWidth - margin, y + tier1H, headerBgPaint)
+        canvas.drawRect(margin, y, pageWidth - margin, y + tier1H, borderPaint)
+        val tier1Specs = listOf(
+            strings.resultSheetSubjectCol to subjW,
+            strings.resultSheetFullCol to fullW,
+            strings.localizeExamTitle(normalizedExams[0]) to termW,
+            strings.localizeExamTitle(normalizedExams[1]) to termW,
+            strings.localizeExamTitle(normalizedExams[2]) to termW,
+            strings.threeTermAverageCol to avgW,
+            strings.resultSheetGradeCol to gradeW
+        )
+        var t1x = margin
+        tier1Specs.forEachIndexed { idx, (label, w) ->
             val align = if (idx == 0) android.text.Layout.Alignment.ALIGN_NORMAL else android.text.Layout.Alignment.ALIGN_CENTER
-            drawTextInCell(
-                canvas,
-                h,
-                cx + 5f * scale,
-                y + 7f * scale,
-                colWidths[idx] - 10f * scale,
-                tableHeaderText,
-                align
-            )
-            if (idx > 0) {
-                canvas.drawLine(cx, y, cx, y + headerHeight, borderPaint)
-            }
-            cx += colWidths[idx]
+            drawTextInCell(canvas, label, t1x + 3f * scale, y + 6f * scale, w - 6f * scale, tableHeaderText, align)
+            if (idx > 0) canvas.drawLine(t1x, y, t1x, y + tier1H, borderPaint)
+            t1x += w
         }
-        y += headerHeight
+        y += tier1H
+
+        // Tier 2 Sub-Header Row
+        canvas.drawRect(margin, y, pageWidth - margin, y + tier2H, subHeaderBgPaint)
+        canvas.drawRect(margin, y, pageWidth - margin, y + tier2H, borderPaint)
+        val tier2Labels = listOf(
+            "", "",
+            strings.continuousShortCol, strings.summativeShortCol, strings.totalShortCol,
+            strings.continuousShortCol, strings.summativeShortCol, strings.totalShortCol,
+            strings.continuousShortCol, strings.summativeShortCol, strings.totalShortCol,
+            strings.threeTermAverageCol, strings.resultSheetOverallResult
+        )
+        var t2x = margin
+        tier2Labels.forEachIndexed { idx, label ->
+            if (label.isNotEmpty()) {
+                drawTextInCell(
+                    canvas,
+                    label,
+                    t2x + 2f * scale,
+                    y + 5f * scale,
+                    leafColWidths[idx] - 4f * scale,
+                    subHeaderText,
+                    android.text.Layout.Alignment.ALIGN_CENTER
+                )
+            }
+            if (idx > 0) canvas.drawLine(t2x, y, t2x, y + tier2H, borderPaint)
+            t2x += leafColWidths[idx]
+        }
+        y += tier2H
+
+        fun fmt(v: Double?): String = v?.let { com.example.data.model.ExamResultCalculator.formatMark(it) } ?: "—"
 
         // Subject Rows
-        if (summary.subjectEvaluations.isEmpty()) {
+        if (combinedTotals.subjectRows.isEmpty()) {
             canvas.drawRect(margin, y, pageWidth - margin, y + rowHeight, borderPaint)
             drawTextInCell(
                 canvas,
                 "No subjects configured for ${exam.title}",
                 margin + 8f * scale,
-                y + 7f * scale,
+                y + 6f * scale,
                 contentWidth - 16f * scale,
                 cellText,
                 android.text.Layout.Alignment.ALIGN_CENTER
             )
             y += rowHeight
         } else {
-            summary.subjectEvaluations.forEachIndexed { rowIdx, ev ->
+            combinedTotals.subjectRows.forEachIndexed { rowIdx, row ->
                 if (rowIdx % 2 == 1) {
                     canvas.drawRect(margin, y, pageWidth - margin, y + rowHeight, zebraBgPaint)
                 }
                 canvas.drawRect(margin, y, pageWidth - margin, y + rowHeight, borderPaint)
 
-                val obtainedText = ev.obtained?.let { com.example.data.model.ExamResultCalculator.formatMark(it) } ?: "—"
-                val highestText = if (ev.highestInClass > 0.0) com.example.data.model.ExamResultCalculator.formatMark(ev.highestInClass) else "—"
-                val statusText = when {
-                    !ev.hasScore -> "—"
-                    ev.isPassed -> "${ev.letterGrade} (${strings.resultPass})"
-                    else -> "${ev.letterGrade} (${strings.resultFail})"
+                val stText = when {
+                    !row.activeTermHasScore -> "—"
+                    row.activeTermPassed -> "${row.activeTermGrade} (${strings.resultPass})"
+                    else -> "${row.activeTermGrade} (${strings.resultFail})"
                 }
-                val statusPaint = when {
-                    !ev.hasScore -> cellText
-                    ev.isPassed -> passPaint
+                val stPaint = when {
+                    !row.activeTermHasScore -> cellText
+                    row.activeTermPassed -> passPaint
                     else -> failPaint
                 }
 
                 val rowCells = listOf(
-                    ev.spec.subjectName,
-                    ev.spec.fullMarks.toString(),
-                    ev.effectivePassMarks.toString(),
-                    highestText,
-                    obtainedText,
-                    statusText
+                    row.subjectName,
+                    row.fullMarks.toString(),
+                    fmt(row.term1.continuous), fmt(row.term1.summative), fmt(row.term1.total),
+                    fmt(row.term2.continuous), fmt(row.term2.summative), fmt(row.term2.total),
+                    fmt(row.term3.continuous), fmt(row.term3.summative), fmt(row.term3.total),
+                    fmt(row.threeTermAverage),
+                    stText
                 )
                 var rx = margin
                 rowCells.forEachIndexed { colIdx, textVal ->
                     val align = if (colIdx == 0) android.text.Layout.Alignment.ALIGN_NORMAL else android.text.Layout.Alignment.ALIGN_CENTER
                     val p = when (colIdx) {
-                        0 -> cellBoldText
-                        5 -> statusPaint
+                        0, 4, 7, 10, 11 -> cellBoldText
+                        12 -> stPaint
                         else -> cellText
                     }
                     drawTextInCell(
                         canvas,
                         textVal,
-                        rx + 5f * scale,
-                        y + 6f * scale,
-                        colWidths[colIdx] - 10f * scale,
+                        rx + 3f * scale,
+                        y + 5f * scale,
+                        leafColWidths[colIdx] - 6f * scale,
                         p,
                         align
                     )
-                    if (colIdx > 0) {
-                        canvas.drawLine(rx, y, rx, y + rowHeight, borderPaint)
-                    }
-                    rx += colWidths[colIdx]
+                    if (colIdx > 0) canvas.drawLine(rx, y, rx, y + rowHeight, borderPaint)
+                    rx += leafColWidths[colIdx]
                 }
                 y += rowHeight
             }
         }
 
         // Total Summary Row
-        canvas.drawRect(margin, y, pageWidth - margin, y + headerHeight, totalBgPaint)
-        canvas.drawRect(margin, y, pageWidth - margin, y + headerHeight, borderPaint)
-        val totalObtainedStr = if (summary.scoredCount > 0) {
-            "${com.example.data.model.ExamResultCalculator.formatMark(summary.totalObtained)} (${summary.percentage}%)"
-        } else "—"
+        canvas.drawRect(margin, y, pageWidth - margin, y + tier1H, totalBgPaint)
+        canvas.drawRect(margin, y, pageWidth - margin, y + tier1H, borderPaint)
         val overallStatusText = when (summary.outcome) {
             com.example.data.model.ExamPassOutcome.PASS ->
-                "${strings.resultPass} • ${strings.resultSheetGpaLabel} ${com.example.data.model.ExamResultCalculator.formatGpa(summary.gpa)}"
+                "${strings.resultPass} (${com.example.data.model.ExamResultCalculator.formatGpa(summary.gpa)})"
             com.example.data.model.ExamPassOutcome.FAIL -> strings.resultFail
             com.example.data.model.ExamPassOutcome.PENDING -> strings.resultPending
         }
@@ -809,70 +846,75 @@ object ReportExporter {
 
         val totalCells = listOf(
             strings.resultSheetTotalRow,
-            summary.configuredFullMarks.toString(),
-            "—",
-            "—",
-            totalObtainedStr,
+            combinedTotals.configuredFullMarks.toString(),
+            if (combinedTotals.t1HasScore && combinedTotals.t1ContTotal > 0.0) fmt(combinedTotals.t1ContTotal) else "—",
+            if (combinedTotals.t1HasScore && combinedTotals.t1SumTotal > 0.0) fmt(combinedTotals.t1SumTotal) else "—",
+            if (combinedTotals.t1HasScore) fmt(combinedTotals.t1Total) else "—",
+            if (combinedTotals.t2HasScore && combinedTotals.t2ContTotal > 0.0) fmt(combinedTotals.t2ContTotal) else "—",
+            if (combinedTotals.t2HasScore && combinedTotals.t2SumTotal > 0.0) fmt(combinedTotals.t2SumTotal) else "—",
+            if (combinedTotals.t2HasScore) fmt(combinedTotals.t2Total) else "—",
+            if (combinedTotals.t3HasScore && combinedTotals.t3ContTotal > 0.0) fmt(combinedTotals.t3ContTotal) else "—",
+            if (combinedTotals.t3HasScore && combinedTotals.t3SumTotal > 0.0) fmt(combinedTotals.t3SumTotal) else "—",
+            if (combinedTotals.t3HasScore) fmt(combinedTotals.t3Total) else "—",
+            fmt(combinedTotals.threeTermAvgTotal),
             overallStatusText
         )
         var tx = margin
         totalCells.forEachIndexed { colIdx, txt ->
             val align = if (colIdx == 0) android.text.Layout.Alignment.ALIGN_NORMAL else android.text.Layout.Alignment.ALIGN_CENTER
-            val p = if (colIdx == 5) overallPaint else cellBoldText
+            val p = if (colIdx == 12) overallPaint else cellBoldText
             drawTextInCell(
                 canvas,
                 txt,
-                tx + 5f * scale,
-                y + 7f * scale,
-                colWidths[colIdx] - 10f * scale,
+                tx + 3f * scale,
+                y + 6f * scale,
+                leafColWidths[colIdx] - 6f * scale,
                 p,
                 align
             )
-            if (colIdx > 0) {
-                canvas.drawLine(tx, y, tx, y + headerHeight, borderPaint)
-            }
-            tx += colWidths[colIdx]
+            if (colIdx > 0) canvas.drawLine(tx, y, tx, y + tier1H, borderPaint)
+            tx += leafColWidths[colIdx]
         }
-        y += headerHeight + 14f * scale
+        y += tier1H + 12f * scale
 
         // Final Exam Merit Position Box (STRICTLY ONLY for Final Exam)
         if (summary.isFinalExam && summary.meritPosition != null) {
-            val meritH = 34f * scale
+            val meritH = 30f * scale
             val meritRect = android.graphics.RectF(margin, y, pageWidth - margin, y + meritH)
-            canvas.drawRoundRect(meritRect, 8f * scale, 8f * scale, totalBgPaint)
-            canvas.drawRoundRect(meritRect, 8f * scale, 8f * scale, borderPaint)
+            canvas.drawRoundRect(meritRect, 6f * scale, 6f * scale, totalBgPaint)
+            canvas.drawRoundRect(meritRect, 6f * scale, 6f * scale, borderPaint)
             val meritLabel = "${strings.meritPositionLabel}: ${com.example.data.model.ExamResultCalculator.ordinal(summary.meritPosition)}"
             drawTextInCell(
                 canvas,
                 meritLabel,
                 margin + 12f * scale,
-                y + 9f * scale,
+                y + 8f * scale,
                 contentWidth - 24f * scale,
                 passPaint,
                 android.text.Layout.Alignment.ALIGN_CENTER
             )
-            y += meritH + 14f * scale
+            y += meritH + 10f * scale
         }
 
         // Signature Strip near bottom
-        val sigY = maxOf(y + 24f * scale, pageHeight - 56f * scale)
-        canvas.drawLine(margin + 10f * scale, sigY, margin + 150f * scale, sigY, borderPaint)
-        canvas.drawLine(pageWidth - margin - 150f * scale, sigY, pageWidth - margin - 10f * scale, sigY, borderPaint)
+        val sigY = maxOf(y + 20f * scale, pageHeight - 44f * scale)
+        canvas.drawLine(margin + 16f * scale, sigY, margin + 176f * scale, sigY, borderPaint)
+        canvas.drawLine(pageWidth - margin - 176f * scale, sigY, pageWidth - margin - 16f * scale, sigY, borderPaint)
         drawTextInCell(
             canvas,
             strings.resultSheetClassTeacherSig,
-            margin + 10f * scale,
+            margin + 16f * scale,
             sigY + 5f * scale,
-            140f * scale,
+            160f * scale,
             metaPaint,
             android.text.Layout.Alignment.ALIGN_CENTER
         )
         drawTextInCell(
             canvas,
             strings.resultSheetHeadTeacherSig,
-            pageWidth - margin - 150f * scale,
+            pageWidth - margin - 176f * scale,
             sigY + 5f * scale,
-            140f * scale,
+            160f * scale,
             metaPaint,
             android.text.Layout.Alignment.ALIGN_CENTER
         )
@@ -882,12 +924,13 @@ object ReportExporter {
         student: StudentRecord,
         exam: com.example.data.model.ExamTermConfig,
         summary: com.example.data.model.StudentExamResultSummary,
+        examConfigs: List<com.example.data.model.ExamTermConfig> = com.example.data.model.ExamDefaults.defaultThreeExams(),
         teacherProfile: TeacherProfile?,
         strings: com.example.ui.i18n.AppStrings
     ): ByteArray {
         val doc = PdfDocument()
-        val pageWidth = 595
-        val pageHeight = 842
+        val pageWidth = 842
+        val pageHeight = 595
         val page = doc.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, 1).create())
         renderStudentExamCardOnCanvas(
             canvas = page.canvas,
@@ -896,6 +939,7 @@ object ReportExporter {
             student = student,
             exam = exam,
             summary = summary,
+            examConfigs = examConfigs,
             teacherProfile = teacherProfile,
             strings = strings
         )
@@ -911,12 +955,19 @@ object ReportExporter {
         student: StudentRecord,
         exam: com.example.data.model.ExamTermConfig,
         summary: com.example.data.model.StudentExamResultSummary,
+        examConfigs: List<com.example.data.model.ExamTermConfig> = com.example.data.model.ExamDefaults.defaultThreeExams(),
         teacherProfile: TeacherProfile?,
         strings: com.example.ui.i18n.AppStrings
     ): ByteArray {
-        val width = 1080
-        val rowCount = maxOf(summary.subjectEvaluations.size, 1)
-        val estimatedHeight = (620 + rowCount * 56 + if (summary.meritPosition != null) 90 else 0).coerceAtLeast(980)
+        val width = 1400
+        val combined = com.example.data.model.ExamResultCalculator.computeCombinedThreeTermTotals(
+            student = student,
+            examConfigs = examConfigs,
+            activeExamId = exam.examId
+        )
+        val rowCount = maxOf(combined.subjectRows.size, 1)
+        val estimatedHeight = (540 + rowCount * 46 + if (summary.isFinalExam && summary.meritPosition != null) 80 else 0)
+            .coerceAtLeast(920)
         val bitmap = android.graphics.Bitmap.createBitmap(width, estimatedHeight, android.graphics.Bitmap.Config.ARGB_8888)
         val canvas = android.graphics.Canvas(bitmap)
         renderStudentExamCardOnCanvas(
@@ -926,6 +977,7 @@ object ReportExporter {
             student = student,
             exam = exam,
             summary = summary,
+            examConfigs = examConfigs,
             teacherProfile = teacherProfile,
             strings = strings
         )
@@ -940,30 +992,40 @@ object ReportExporter {
         student: StudentRecord,
         exam: com.example.data.model.ExamTermConfig,
         summary: com.example.data.model.StudentExamResultSummary,
+        examConfigs: List<com.example.data.model.ExamTermConfig> = com.example.data.model.ExamDefaults.defaultThreeExams(),
         teacherProfile: TeacherProfile?,
         strings: com.example.ui.i18n.AppStrings
     ): String {
         val school = teacherProfile?.schoolName?.ifBlank { strings.appName } ?: strings.appName
         val examTitle = strings.localizeExamTitle(exam)
         val classLabel = strings.localizeClass(student.classLevel)
+        val combined = com.example.data.model.ExamResultCalculator.computeCombinedThreeTermTotals(
+            student = student,
+            examConfigs = examConfigs,
+            activeExamId = exam.examId
+        )
+        fun fmt(v: Double?): String = v?.let { com.example.data.model.ExamResultCalculator.formatMark(it) } ?: "—"
         return buildString {
             appendLine("*$school (${student.academicYear})*")
-            appendLine("*$examTitle*")
+            appendLine("*${strings.threeExamMarksheetTitle} ($examTitle)*")
             appendLine("──────────────────")
             appendLine("*${strings.resultSheetStudentName}:* ${student.combinedDisplayName()}")
             appendLine("*${strings.resultSheetClassName}:* $classLabel | *${strings.resultSheetRollNo}:* ${student.rollNumber}")
             appendLine()
-            summary.subjectEvaluations.forEach { ev ->
-                val obt = ev.obtained?.let { com.example.data.model.ExamResultCalculator.formatMark(it) } ?: "—"
-                val high = if (ev.highestInClass > 0.0) com.example.data.model.ExamResultCalculator.formatMark(ev.highestInClass) else "—"
-                val st = if (!ev.hasScore) "—" else "${ev.letterGrade} (${if (ev.isPassed) strings.resultPass else strings.resultFail})"
-                appendLine("• *${ev.spec.subjectName}:* $obt/${ev.spec.fullMarks} (${strings.highestInClass}: $high) → $st")
+            combined.subjectRows.forEach { row ->
+                val activeTerm = row.breakdownForExam(exam.examId)
+                val contStr = fmt(activeTerm.continuous)
+                val sumStr = fmt(activeTerm.summative)
+                val totStr = fmt(activeTerm.total)
+                val avgStr = fmt(row.threeTermAverage)
+                val st = if (!row.activeTermHasScore) "—" else "${row.activeTermGrade} (${if (row.activeTermPassed) strings.resultPass else strings.resultFail})"
+                appendLine("• *${row.subjectName} (/${row.fullMarks}):* ${strings.continuousShortCol} $contStr + ${strings.summativeShortCol} $sumStr = *$totStr* | ${strings.threeTermAverageCol}: $avgStr → $st")
             }
             appendLine()
             val tot = if (summary.scoredCount > 0) {
                 "${com.example.data.model.ExamResultCalculator.formatMark(summary.totalObtained)} / ${summary.configuredFullMarks} (${summary.percentage}%)"
             } else "—"
-            appendLine("*${strings.resultSheetTotalRow}:* $tot")
+            appendLine("*${strings.resultSheetTotalRow}:* $tot | *${strings.threeTermAverageCol}:* ${fmt(combined.threeTermAvgTotal)}")
             appendLine("*${strings.resultSheetOverallResult}:* ${strings.localizeOutcome(summary.outcome.name)} | *${strings.resultSheetGpaLabel}:* ${com.example.data.model.ExamResultCalculator.formatGpa(summary.gpa)}")
             if (summary.isFinalExam && summary.meritPosition != null) {
                 appendLine("*${strings.meritPositionLabel}:* ${com.example.data.model.ExamResultCalculator.ordinal(summary.meritPosition)}")

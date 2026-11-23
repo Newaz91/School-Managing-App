@@ -140,7 +140,24 @@ data class AppStrings(
     val languageSettingTitle: String,
     val languageSettingDesc: String,
     val dashboardQuickExamMarks: String,
-    val dashboardQuickClassResults: String
+    val dashboardQuickClassResults: String,
+    // v1.5: 3-column term evaluation, Offline Sync, and In-App Update
+    val continuousMarkLabel: String,
+    val summativeMarkLabel: String,
+    val totalObtainedMarkLabel: String,
+    val continuousShortCol: String,
+    val summativeShortCol: String,
+    val totalShortCol: String,
+    val threeTermAverageCol: String,
+    val swipeTableHint: String,
+    val offlineBannerText: String,
+    val pendingSyncBannerText: String,
+    val syncedStatusText: String,
+    val syncNowButton: String,
+    val updateAppButton: String,
+    val updateAvailableBadge: String,
+    val updateCheckTitle: String,
+    val updateNowAction: String
 ) {
     fun localizeClass(classLevel: String): String {
         if (language == AppLanguage.EN) return classLevel
@@ -303,7 +320,23 @@ val EnglishStrings = AppStrings(
     languageSettingTitle = "App Language (English / বাংলা)",
     languageSettingDesc = "Switch all menus, labels, and result sheets between English and Bangla.",
     dashboardQuickExamMarks = "Exam Marks Sheet",
-    dashboardQuickClassResults = "Class Results"
+    dashboardQuickClassResults = "Class Results",
+    continuousMarkLabel = "Continuous (ধারাবাহিক)",
+    summativeMarkLabel = "Summative (সামষ্টিক)",
+    totalObtainedMarkLabel = "Total Obtained (মোট)",
+    continuousShortCol = "Cont.",
+    summativeShortCol = "Sum.",
+    totalShortCol = "Total",
+    threeTermAverageCol = "3-Term Avg",
+    swipeTableHint = "Swipe left/right ↔ to view all 3 terms & average",
+    offlineBannerText = "Offline Mode — Changes saved on phone; auto-syncs when online",
+    pendingSyncBannerText = "Pending server sync — Uploading changes automatically…",
+    syncedStatusText = "Online & Synced",
+    syncNowButton = "Sync Now",
+    updateAppButton = "Update App",
+    updateAvailableBadge = "New Update",
+    updateCheckTitle = "App Updates & Cloud Sync",
+    updateNowAction = "Update App Now"
 )
 
 val BanglaStrings = AppStrings(
@@ -424,7 +457,23 @@ val BanglaStrings = AppStrings(
     languageSettingTitle = "অ্যাপের ভাষা (English / বাংলা)",
     languageSettingDesc = "সব মেনু, ফর্ম ও ফলাফলের শিট ইংরেজি বা বাংলায় পরিবর্তন করুন।",
     dashboardQuickExamMarks = "পরীক্ষার নম্বর শিট",
-    dashboardQuickClassResults = "শ্রেণি ফলাফল"
+    dashboardQuickClassResults = "শ্রেণি ফলাফল",
+    continuousMarkLabel = "ধারাবাহিক নম্বর",
+    summativeMarkLabel = "সামষ্টিক নম্বর",
+    totalObtainedMarkLabel = "মোট প্রাপ্ত নম্বর",
+    continuousShortCol = "ধারাবাহিক",
+    summativeShortCol = "সামষ্টিক",
+    totalShortCol = "মোট",
+    threeTermAverageCol = "৩ প্রান্তিক গড়",
+    swipeTableHint = "৩ প্রান্তিকের সব কলাম ও গড় দেখতে ডানে-বামে ↔ স্ক্রল করুন",
+    offlineBannerText = "অফলাইন মোড — তথ্য ফোনে সংরক্ষিত হচ্ছে, নেট এলেই সার্ভারে অটো-সেভ হবে",
+    pendingSyncBannerText = "সার্ভারে অটো-সিঙ্ক হচ্ছে…",
+    syncedStatusText = "অনলাইন ও সিঙ্কড",
+    syncNowButton = "সিঙ্ক করুন",
+    updateAppButton = "অ্যাপ আপডেট",
+    updateAvailableBadge = "নতুন আপডেট",
+    updateCheckTitle = "অ্যাপ আপডেট ও সার্ভার সিঙ্ক",
+    updateNowAction = "এখনই আপডেট করুন"
 )
 
 fun stringsForLanguage(lang: AppLanguage): AppStrings =

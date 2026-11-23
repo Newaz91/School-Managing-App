@@ -15,7 +15,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -67,7 +69,9 @@ fun ClassResultsPanel(
     selectedYear: Int,
     onSelectStudent: (StudentRecord) -> Unit,
     onOpenExamSetup: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    listState: LazyListState = rememberLazyListState(),
+    headerContent: (@Composable () -> Unit)? = null
 ) {
     val context = LocalContext.current
     val strings = LocalAppStrings.current
@@ -96,10 +100,16 @@ fun ClassResultsPanel(
     }
 
     LazyColumn(
+        state = listState,
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        if (headerContent != null) {
+            item(key = "results_host_controls") {
+                headerContent()
+            }
+        }
         // Exam Selector Row
         item {
             Row(

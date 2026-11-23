@@ -638,6 +638,83 @@ object ExcelBackupManager {
         return result
     }
 
+    data class SubjectTermImportRow(
+        val continuous: String? = null,
+        val summative: String? = null,
+        val totalOnly: String? = null
+    )
+
+    fun parseSubjectTermPartsFromUri(
+        context: Context,
+        uri: Uri,
+        classStudents: List<StudentRecord>,
+        subjectName: String
+    ): Map<String, SubjectTermImportRow> {
+        val raw = parseRawWorkbookFromUri(
+            context = context,
+            uri = uri,
+            defaultAcademicYear = 2026,
+            existingSubjects = emptyList(),
+            existingCustomFields = emptyList()
+        )
+        val sheet = raw.sheets.firstOrNull() ?: throw IllegalStateException("No rows found.")
+        val headerIdx = sheet.suggestedHeaderRowIndex
+        val headers = sheet.rows.getOrNull(headerIdx).orEmpty().map { it.trim().lowercase() }
+        val dataRows = sheet.rows.drop(headerIdx + 1)
+
+        val rollCol = headers.indexOfFirst { it.contains("roll") || it.contains("রোল") }
+        val nameCol = headers.indexOfFirst { it.contains("name") || it.contains("নাম") }
+        val contCol = headers.indexOfFirst {
+            it.contains("cont") || it.contains("ধারাবাহিক") || it == "ca" || it.contains("ca ")
+        }
+        val sumCol = headers.indexOfFirst {
+            it.contains("sum") || it.contains("সামষ্টিক") || it == "sa" || it.contains("sa ")
+        }
+        val subCol = headers.indexOfFirst { it.contains(subjectName.lowercase()) }.takeIf { it >= 0 }
+            ?: headers.indexOfFirst { it.contains("mark") || it.contains("obtain") || it.contains("score") || it.contains("নম্বর") || it.contains("total") || it.contains("মোট") }
+                .takeIf { it >= 0 }
+            ?: headers.indexOfLast { idxHeader ->
+                idxHeader.isNotBlank() && !idxHeader.contains("roll") && !idxHeader.contains("name") && !idxHeader.contains("class")
+            }.takeIf { it >= 0 }
+            ?: 1
+
+        val result = mutableMapOf<String, SubjectTermImportRow>()
+        val byRoll = classStudents.associateBy { it.rollNumber.trim().lowercase() }
+        val byRollNum = classStudents.associateBy { it.rollSortKey() }
+        val byName = buildMap<String, StudentRecord> {
+            classStudents.forEach { s ->
+                if (s.studentNameEn.isNotBlank()) put(s.studentNameEn.trim().lowercase(), s)
+                if (s.studentNameBn.isNotBlank()) put(s.studentNameBn.trim().lowercase(), s)
+            }
+        }
+
+        dataRows.forEach { row ->
+            val rawRoll = if (rollCol >= 0) row.getOrNull(rollCol)?.trim().orEmpty() else ""
+            val rawName = if (nameCol >= 0) row.getOrNull(nameCol)?.trim().orEmpty() else ""
+
+            val matched = when {
+                rawRoll.isNotBlank() -> byRoll[rawRoll.lowercase()]
+                    ?: rawRoll.filter { it.isDigit() }.toIntOrNull()?.let { byRollNum[it] }
+                rawName.isNotBlank() -> byName[rawName.lowercase()]
+                else -> null
+            } ?: if (rawName.isNotBlank()) byName[rawName.lowercase()] else null
+
+            if (matched != null && matched.id.isNotBlank()) {
+                val contVal = if (contCol >= 0) row.getOrNull(contCol)?.trim()?.toDoubleOrNull()?.let { ExamResultCalculatorCompat.cleanMarkString(it) } else null
+                val sumVal = if (sumCol >= 0) row.getOrNull(sumCol)?.trim()?.toDoubleOrNull()?.let { ExamResultCalculatorCompat.cleanMarkString(it) } else null
+                if (contVal != null || sumVal != null) {
+                    result[matched.id] = SubjectTermImportRow(continuous = contVal, summative = sumVal)
+                } else {
+                    val totVal = row.getOrNull(subCol)?.trim()?.toDoubleOrNull()?.let { ExamResultCalculatorCompat.cleanMarkString(it) }
+                    if (totVal != null) {
+                        result[matched.id] = SubjectTermImportRow(totalOnly = totVal)
+                    }
+                }
+            }
+        }
+        return result
+    }
+
     private fun normalizeClassNameFlexible(raw: String, fallback: String): String {
         val clean = raw.trim()
         if (clean.isBlank()) return fallback

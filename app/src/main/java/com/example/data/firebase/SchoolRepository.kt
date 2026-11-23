@@ -23,31 +23,66 @@ import com.example.data.model.TeacherProfile
 import com.example.data.model.TeacherRoles
 import com.example.data.model.generateShortId
 import com.example.data.model.normalizeSchoolId
+import com.google.android.gms.tasks.Task
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.firebase.firestore.MetadataChanges
 import com.google.firebase.firestore.Query
+import com.google.firebase.firestore.Source
 import com.google.firebase.firestore.snapshots
+import com.example.util.NetworkMonitor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
 class SchoolRepository(
-    private val db: FirebaseFirestore
+    private val db: FirebaseFirestore,
+    private val isOnlineProvider: () -> Boolean = { true }
 ) {
     constructor(context: Context) : this(
-        FirebaseFirestore.getInstance(
+        db = FirebaseFirestore.getInstance(
             context.applicationContext.getString(R.string.firestore_database_id)
-        )
+        ),
+        isOnlineProvider = { NetworkMonitor.isCurrentlyOnline(context.applicationContext) }
     )
+
+    private suspend fun <T> Task<T>.awaitWriteOfflineSafe(): T? {
+        val timeoutMs = if (isOnlineProvider()) 3500L else 200L
+        return withTimeoutOrNull(timeoutMs) { await() }
+    }
+
+    private suspend fun getDocOfflineSafe(
+        ref: com.google.firebase.firestore.DocumentReference
+    ): DocumentSnapshot? {
+        if (isOnlineProvider()) {
+            val onlineSnap = withTimeoutOrNull(2500L) {
+                runCatching { ref.get().await() }.getOrNull()
+            }
+            if (onlineSnap != null) return onlineSnap
+        }
+        return runCatching { ref.get(Source.CACHE).await() }.getOrNull()
+    }
+
+    private suspend fun getQueryOfflineSafe(query: Query): com.google.firebase.firestore.QuerySnapshot? {
+        if (isOnlineProvider()) {
+            val onlineSnap = withTimeoutOrNull(2500L) {
+                runCatching { query.get().await() }.getOrNull()
+            }
+            if (onlineSnap != null) return onlineSnap
+        }
+        return runCatching { query.get(Source.CACHE).await() }.getOrNull()
+    }
 
     private fun requireSchoolId(schoolId: String): String {
         val clean = normalizeSchoolId(schoolId)
@@ -357,6 +392,81 @@ class SchoolRepository(
         )
     }
 
+    fun observeHasPendingSync(schoolId: String): Flow<Boolean> = flow {
+        val id = requireSchoolId(schoolId)
+        val studentsPending = schoolDoc(id).collection("students")
+            .snapshots(MetadataChanges.INCLUDE)
+            .map { it.metadata.hasPendingWrites() }
+            .catch { emit(false) }
+        val attendancePending = schoolDoc(id).collection("attendanceLogs")
+            .snapshots(MetadataChanges.INCLUDE)
+            .map { it.metadata.hasPendingWrites() }
+            .catch { emit(false) }
+        val changesPending = schoolDoc(id).collection("pendingChanges")
+            .snapshots(MetadataChanges.INCLUDE)
+            .map { it.metadata.hasPendingWrites() }
+            .catch { emit(false) }
+        emitAll(
+            combine(studentsPending, attendancePending, changesPending) { a, b, c ->
+                a || b || c
+            }
+        )
+    }
+
+    suspend fun syncPendingWritesAndCheckUpdates(schoolId: String): Result<SchoolWorkspace?> {
+        val cleanId = requireSchoolId(schoolId)
+        val path = "schools/$cleanId"
+        return try {
+            withTimeoutOrNull(6000L) {
+                db.waitForPendingWrites().await()
+            }
+            val snap = if (isOnlineProvider()) {
+                withTimeoutOrNull(4500L) {
+                    schoolDoc(cleanId).get(Source.SERVER).await()
+                } ?: schoolDoc(cleanId).get(Source.CACHE).await()
+            } else {
+                schoolDoc(cleanId).get(Source.CACHE).await()
+            }
+            val ws = if (snap.exists()) {
+                snap.toObject(SchoolWorkspace::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+            } else null
+            Result.success(ws)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.GET, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun saveAppUpdateMetadata(
+        schoolId: String,
+        latestVersionCode: Long,
+        latestVersionName: String,
+        updateUrl: String,
+        releaseNotes: String
+    ): Result<Unit> {
+        val cleanId = requireSchoolId(schoolId)
+        val path = "schools/$cleanId"
+        return try {
+            schoolDoc(cleanId).update(
+                mapOf(
+                    "latestAppVersionCode" to latestVersionCode.coerceIn(0L, 999999L),
+                    "latestAppVersionName" to latestVersionName.trim().take(20),
+                    "appUpdateUrl" to updateUrl.trim().take(500),
+                    "appUpdateNotes" to releaseNotes.trim().take(300),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).awaitWriteOfflineSafe()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
+            Result.failure(e)
+        }
+    }
+
     suspend fun updateSchoolDetails(
         schoolId: String,
         schoolName: String,
@@ -374,7 +484,7 @@ class SchoolRepository(
                     "defaultAcademicYear" to defaultAcademicYear.coerceIn(2020L, 2050L),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
-            ).await()
+            ).awaitWriteOfflineSafe()
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -406,7 +516,7 @@ class SchoolRepository(
                     "teachers" to nextTeachers,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
-            ).await()
+            ).awaitWriteOfflineSafe()
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -425,7 +535,7 @@ class SchoolRepository(
                     "examConfigs" to normalized,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
-            ).await()
+            ).awaitWriteOfflineSafe()
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -475,7 +585,7 @@ class SchoolRepository(
             require(student.rollNumber.isNotBlank()) { "Roll number is required." }
             val colRef = schoolDoc(cleanId).collection("students")
             val docRef = if (student.id.isNotBlank()) colRef.document(student.id) else colRef.document()
-            docRef.set(student.toCreateMapForSchool(cleanId, actorName)).await()
+            docRef.set(student.toCreateMapForSchool(cleanId, actorName)).awaitWriteOfflineSafe()
             Result.success(docRef.id)
         } catch (e: CancellationException) {
             throw e
@@ -497,7 +607,7 @@ class SchoolRepository(
             val fields = student.copy(
                 lastUpdatedByName = actorName.ifBlank { student.lastUpdatedByName }
             ).toMutableFieldMap()
-            schoolDoc(cleanId).collection("students").document(student.id).update(fields).await()
+            schoolDoc(cleanId).collection("students").document(student.id).update(fields).awaitWriteOfflineSafe()
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -512,7 +622,7 @@ class SchoolRepository(
         val path = "schools/$cleanId/students/$studentId"
         return try {
             require(studentId.isNotBlank()) { "Student ID is required." }
-            schoolDoc(cleanId).collection("students").document(studentId).delete().await()
+            schoolDoc(cleanId).collection("students").document(studentId).delete().awaitWriteOfflineSafe()
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -552,7 +662,7 @@ class SchoolRepository(
                     fields["updatedAt"] = FieldValue.serverTimestamp()
                     batch.update(col.document(stuId), fields)
                 }
-                batch.commit().await()
+                batch.commit().awaitWriteOfflineSafe()
             }
             Result.success(entries.size)
         } catch (e: CancellationException) {
@@ -787,14 +897,14 @@ class SchoolRepository(
             val col = schoolDoc(cleanId).collection("subjects")
             if (subject.id.isBlank()) {
                 val docRef = col.document(generateShortId("sub"))
-                docRef.set(subject.toCreateMapForSchool(cleanId)).await()
+                docRef.set(subject.toCreateMapForSchool(cleanId)).awaitWriteOfflineSafe()
             } else {
                 val docRef = col.document(subject.id)
-                val snap = docRef.get().await()
-                if (snap.exists()) {
-                    docRef.update(subject.toUpdateMap()).await()
+                val snap = getDocOfflineSafe(docRef)
+                if (snap != null && snap.exists()) {
+                    docRef.update(subject.toUpdateMap()).awaitWriteOfflineSafe()
                 } else {
-                    docRef.set(subject.toCreateMapForSchool(cleanId)).await()
+                    docRef.set(subject.toCreateMapForSchool(cleanId)).awaitWriteOfflineSafe()
                 }
             }
             Result.success(Unit)
@@ -811,7 +921,7 @@ class SchoolRepository(
         val path = "schools/$cleanId/subjects/$subjectId"
         return try {
             require(subjectId.isNotBlank()) { "Subject ID is required." }
-            schoolDoc(cleanId).collection("subjects").document(subjectId).delete().await()
+            schoolDoc(cleanId).collection("subjects").document(subjectId).delete().awaitWriteOfflineSafe()
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -847,14 +957,14 @@ class SchoolRepository(
             val col = schoolDoc(cleanId).collection("customFields")
             if (field.id.isBlank()) {
                 val docRef = col.document(generateShortId("cf"))
-                docRef.set(field.toCreateMapForSchool(cleanId)).await()
+                docRef.set(field.toCreateMapForSchool(cleanId)).awaitWriteOfflineSafe()
             } else {
                 val docRef = col.document(field.id)
-                val snap = docRef.get().await()
-                if (snap.exists()) {
-                    docRef.update(field.toUpdateMap()).await()
+                val snap = getDocOfflineSafe(docRef)
+                if (snap != null && snap.exists()) {
+                    docRef.update(field.toUpdateMap()).awaitWriteOfflineSafe()
                 } else {
-                    docRef.set(field.toCreateMapForSchool(cleanId)).await()
+                    docRef.set(field.toCreateMapForSchool(cleanId)).awaitWriteOfflineSafe()
                 }
             }
             Result.success(Unit)
@@ -871,7 +981,7 @@ class SchoolRepository(
         val path = "schools/$cleanId/customFields/$fieldId"
         return try {
             require(fieldId.isNotBlank()) { "Field ID is required." }
-            schoolDoc(cleanId).collection("customFields").document(fieldId).delete().await()
+            schoolDoc(cleanId).collection("customFields").document(fieldId).delete().awaitWriteOfflineSafe()
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -914,21 +1024,23 @@ class SchoolRepository(
         val path = "schools/$cleanId/attendanceLogs/$docId"
         return try {
             val docRef = schoolDoc(cleanId).collection("attendanceLogs").document(docId)
-            val snap = docRef.get().await()
-            if (snap.exists()) {
-                docRef.update(log.toUpdateMap()).await()
+            val snap = getDocOfflineSafe(docRef)
+            if (snap != null && snap.exists()) {
+                docRef.update(log.toUpdateMap()).awaitWriteOfflineSafe()
             } else {
-                docRef.set(log.toCreateMap(cleanId)).await()
+                docRef.set(log.toCreateMap(cleanId)).awaitWriteOfflineSafe()
             }
 
-            // Recompute cumulative daysPresent / totalSchoolDays across this class & year
-            val logsSnap = schoolDoc(cleanId).collection("attendanceLogs")
-                .whereEqualTo("academicYear", log.academicYear)
-                .get()
-                .await()
-            val classLogs = logsSnap.documents.mapNotNull {
+            // Recompute cumulative daysPresent / totalSchoolDays across this class & year (works offline via cache)
+            val logsSnap = getQueryOfflineSafe(
+                schoolDoc(cleanId).collection("attendanceLogs")
+                    .whereEqualTo("academicYear", log.academicYear)
+            )
+            val classLogs = logsSnap?.documents.orEmpty().mapNotNull {
                 it.toObject(AttendanceLog::class.java)
-            }.filter { it.classLevel == log.classLevel }
+            }.filter { it.classLevel == log.classLevel }.let { list ->
+                if (list.any { it.dateKey == log.dateKey }) list else list + log
+            }
 
             if (classStudents.isNotEmpty()) {
                 val stuCol = schoolDoc(cleanId).collection("students")
@@ -950,7 +1062,7 @@ class SchoolRepository(
                             )
                         }
                     }
-                    batch.commit().await()
+                    batch.commit().awaitWriteOfflineSafe()
                 }
             }
 
@@ -990,7 +1102,7 @@ class SchoolRepository(
         return try {
             schoolDoc(cleanId).collection("pendingChanges")
                 .add(request.toCreateMap(cleanId))
-                .await()
+                .awaitWriteOfflineSafe()
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -1070,7 +1182,7 @@ class SchoolRepository(
                     "reviewedByName" to reviewerName.trim().ifBlank { "Admin" }.take(100),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
-            ).await()
+            ).awaitWriteOfflineSafe()
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -1094,7 +1206,7 @@ class SchoolRepository(
                     "reviewedByName" to reviewerName.trim().ifBlank { "Admin" }.take(100),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
-            ).await()
+            ).awaitWriteOfflineSafe()
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -1135,9 +1247,9 @@ class SchoolRepository(
         return try {
             val col = schoolDoc(cleanId).collection("parentNotices")
             if (notice.id.isBlank()) {
-                col.add(notice.toCreateMapForSchool(cleanId, senderName)).await()
+                col.add(notice.toCreateMapForSchool(cleanId, senderName)).awaitWriteOfflineSafe()
             } else {
-                col.document(notice.id).update(notice.toUpdateMap()).await()
+                col.document(notice.id).update(notice.toUpdateMap()).awaitWriteOfflineSafe()
             }
             Result.success(Unit)
         } catch (e: CancellationException) {
@@ -1152,7 +1264,7 @@ class SchoolRepository(
         val cleanId = requireSchoolId(schoolId)
         val path = "schools/$cleanId/parentNotices/$noticeId"
         return try {
-            schoolDoc(cleanId).collection("parentNotices").document(noticeId).delete().await()
+            schoolDoc(cleanId).collection("parentNotices").document(noticeId).delete().awaitWriteOfflineSafe()
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -1202,7 +1314,8 @@ class SchoolRepository(
                 tag = tag.ifBlank { "General" },
                 text = cleanText
             )
-            val docRef = schoolDoc(cleanId).collection("messages").add(msg.toCreateMapForSchool(cleanId)).await()
+            val docRef = schoolDoc(cleanId).collection("messages").document()
+            docRef.set(msg.toCreateMapForSchool(cleanId)).awaitWriteOfflineSafe()
 
             val recent = (workspace?.recentMessages.orEmpty() + RecentChatEntry(
                 id = docRef.id,
@@ -1218,7 +1331,7 @@ class SchoolRepository(
                     "recentMessages" to recent.map { it.toMap() },
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
-            ).await()
+            ).awaitWriteOfflineSafe()
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -1240,7 +1353,7 @@ class SchoolRepository(
             val msg = SchoolChatMessage(text = newText, tag = newTag)
             schoolDoc(cleanId).collection("messages").document(messageId)
                 .update(msg.toEditMap(newText, newTag))
-                .await()
+                .awaitWriteOfflineSafe()
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -1258,7 +1371,7 @@ class SchoolRepository(
         val cleanId = requireSchoolId(schoolId)
         val path = "schools/$cleanId/messages/$messageId"
         return try {
-            schoolDoc(cleanId).collection("messages").document(messageId).delete().await()
+            schoolDoc(cleanId).collection("messages").document(messageId).delete().awaitWriteOfflineSafe()
             if (workspace != null) {
                 val filteredRecent = workspace.recentMessages.filterNot { it.id == messageId }
                 if (filteredRecent.size != workspace.recentMessages.size) {
@@ -1267,7 +1380,7 @@ class SchoolRepository(
                             "recentMessages" to filteredRecent.map { it.toMap() },
                             "updatedAt" to FieldValue.serverTimestamp()
                         )
-                    ).await()
+                    ).awaitWriteOfflineSafe()
                 }
             }
             Result.success(Unit)

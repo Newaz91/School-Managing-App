@@ -68,7 +68,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.material3.VerticalDivider
 import com.example.data.model.ClassLevels
+import com.example.data.model.CombinedThreeTermTotals
 import com.example.data.model.ExamDefaults
 import com.example.data.model.ExamPassOutcome
 import com.example.data.model.ExamResultCalculator
@@ -108,7 +112,7 @@ fun StudentMarksheetPanel(
     var isEditingMarks by remember { mutableStateOf(false) }
     var showCustomizeDialog by remember { mutableStateOf(false) }
 
-    val draftMarks = remember(student.id, student.examResults) {
+    val draftMarks = remember(student.id) {
         mutableStateMapOf<String, String>().apply {
             putAll(student.examResults)
         }
@@ -145,6 +149,14 @@ fun StudentMarksheetPanel(
     }
 
     val applicableSpecs = summary.subjectEvaluations.map { it.spec }
+
+    val combinedTotals = remember(normalizedExams, draftStudent, activeExam.examId) {
+        ExamResultCalculator.computeCombinedThreeTermTotals(
+            student = draftStudent,
+            examConfigs = normalizedExams,
+            activeExamId = activeExam.examId
+        )
+    }
 
     Column(
         modifier = modifier.fillMaxWidth(),
@@ -314,6 +326,7 @@ fun StudentMarksheetPanel(
                                     student = draftStudent,
                                     exam = activeExam,
                                     summary = summary,
+                                    examConfigs = normalizedExams,
                                     teacherProfile = teacherProfile,
                                     strings = strings
                                 )
@@ -338,6 +351,7 @@ fun StudentMarksheetPanel(
                                     student = draftStudent,
                                     exam = activeExam,
                                     summary = summary,
+                                    examConfigs = normalizedExams,
                                     teacherProfile = teacherProfile,
                                     strings = strings
                                 )
@@ -367,6 +381,7 @@ fun StudentMarksheetPanel(
                                     student = draftStudent,
                                     exam = activeExam,
                                     summary = summary,
+                                    examConfigs = normalizedExams,
                                     teacherProfile = teacherProfile,
                                     strings = strings
                                 )
@@ -396,6 +411,7 @@ fun StudentMarksheetPanel(
                                     student = draftStudent,
                                     exam = activeExam,
                                     summary = summary,
+                                    examConfigs = normalizedExams,
                                     teacherProfile = teacherProfile,
                                     strings = strings
                                 )
@@ -451,21 +467,10 @@ fun StudentMarksheetPanel(
                     }
                     Button(
                         onClick = {
-                            var updated = student
-                            draftMarks.forEach { (k, v) ->
-                                val parts = k.split("__", limit = 2)
-                                if (parts.size == 2) {
-                                    updated = updated.withExamMark(parts[0], parts[1], v)
-                                }
-                            }
-                            student.examResults.keys.forEach { oldKey ->
-                                if (!draftMarks.containsKey(oldKey) || draftMarks[oldKey].isNullOrBlank()) {
-                                    val parts = oldKey.split("__", limit = 2)
-                                    if (parts.size == 2) {
-                                        updated = updated.withExamMark(parts[0], parts[1], "")
-                                    }
-                                }
-                            }
+                            val cleanExamResults = draftMarks.entries
+                                .filter { it.key.isNotBlank() && it.value.isNotBlank() }
+                                .associate { it.key.trim().take(90) to it.value.trim().take(20) }
+                            val updated = student.copy(examResults = cleanExamResults)
                             onSaveStudentMarks(updated) {
                                 isEditingMarks = false
                             }
@@ -484,7 +489,7 @@ fun StudentMarksheetPanel(
             }
         }
 
-        // Marksheet Preview Table Chart (exact requested layout) OR Subject Input Cards when editing
+        // Marksheet Preview Table Chart OR Subject Continuous+Summative Input Cards when editing
         if (applicableSpecs.isEmpty()) {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
@@ -521,13 +526,37 @@ fun StudentMarksheetPanel(
             MarksheetFormTableCard(
                 student = draftStudent,
                 exam = activeExam,
+                examConfigs = normalizedExams,
                 summary = summary,
+                combinedTotals = combinedTotals,
                 teacherProfile = teacherProfile
             )
         } else {
             summary.subjectEvaluations.forEach { ev ->
                 val spec = ev.spec
                 val markKey = student.examMarkKey(activeExam.examId, spec.subjectId)
+                val contKey = student.examContinuousKey(activeExam.examId, spec.subjectId)
+                val sumKey = student.examSummativeKey(activeExam.examId, spec.subjectId)
+
+                val contVal = draftMarks[contKey].orEmpty()
+                val sumVal = draftMarks[sumKey].orEmpty()
+                val totalVal = draftMarks[markKey].orEmpty()
+                val combinedRow = combinedTotals.subjectRows.firstOrNull {
+                    it.specByExamId[activeExam.examId]?.subjectId == spec.subjectId ||
+                        it.subjectName.equals(spec.subjectName, ignoreCase = true)
+                }
+
+                fun updateParts(nextCont: String, nextSum: String) {
+                    if (nextCont.isBlank()) draftMarks.remove(contKey) else draftMarks[contKey] = nextCont
+                    if (nextSum.isBlank()) draftMarks.remove(sumKey) else draftMarks[sumKey] = nextSum
+                    val c = nextCont.trim().toDoubleOrNull()
+                    val s = nextSum.trim().toDoubleOrNull()
+                    if (c != null || s != null) {
+                        draftMarks[markKey] = ExamResultCalculator.formatMark((c ?: 0.0) + (s ?: 0.0))
+                    } else {
+                        draftMarks.remove(markKey)
+                    }
+                }
 
                 Card(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
@@ -549,8 +578,9 @@ fun StudentMarksheetPanel(
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.Bold
                                 )
+                                val highStr = if (ev.highestInClass > 0.0) ExamResultCalculator.formatMark(ev.highestInClass) else "—"
                                 Text(
-                                    text = "${strings.fullMarksLabel}: ${spec.fullMarks} • ${strings.passMarksLabel}: ${ev.effectivePassMarks}",
+                                    text = "${strings.fullMarksLabel}: ${spec.fullMarks} • ${strings.highestInClass}: $highStr",
                                     fontFamily = JetBrainsMonoFontFamily,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -588,41 +618,93 @@ fun StudentMarksheetPanel(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Surface(
-                                color = MaterialTheme.colorScheme.surface,
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.weight(0.9f)
-                            ) {
-                                Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
-                                    Text(
-                                        text = strings.highestInClass,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Text(
-                                        text = if (ev.highestInClass > 0.0) ExamResultCalculator.formatMark(ev.highestInClass) else "—",
-                                        fontFamily = JetBrainsMonoFontFamily,
-                                        fontWeight = FontWeight.Bold,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = MaterialTheme.colorScheme.tertiary
-                                    )
-                                }
-                            }
-
                             OutlinedTextField(
-                                value = draftMarks[markKey].orEmpty(),
+                                value = contVal,
                                 onValueChange = { input ->
-                                    val filtered = input.filter { it.isDigit() || it == '.' }
-                                    if (filtered.isBlank()) draftMarks.remove(markKey)
-                                    else draftMarks[markKey] = filtered
+                                    val filtered = input.filter { it.isDigit() || it == '.' }.take(10)
+                                    updateParts(filtered, sumVal)
                                 },
-                                label = { Text(strings.obtainedMark) },
+                                label = { Text(strings.continuousMarkLabel, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                                 modifier = Modifier
-                                    .weight(1.2f)
-                                    .testTag("mark_input_${spec.subjectId}")
+                                    .weight(1f)
+                                    .testTag("mark_cont_input_${spec.subjectId}")
                             )
+
+                            OutlinedTextField(
+                                value = sumVal,
+                                onValueChange = { input ->
+                                    val filtered = input.filter { it.isDigit() || it == '.' }.take(10)
+                                    updateParts(contVal, filtered)
+                                },
+                                label = { Text(strings.summativeMarkLabel, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("mark_sum_input_${spec.subjectId}")
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = strings.totalObtainedMarkLabel,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        text = totalVal.ifBlank { "—" },
+                                        fontFamily = JetBrainsMonoFontFamily,
+                                        fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                            Surface(
+                                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = strings.threeTermAverageCol,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        text = combinedRow?.threeTermAverage?.let { ExamResultCalculator.formatMark(it) } ?: "—",
+                                        fontFamily = JetBrainsMonoFontFamily,
+                                        fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = MaterialTheme.colorScheme.secondary
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -649,21 +731,34 @@ fun StudentMarksheetPanel(
 }
 
 /**
- * Exact On-Screen Marksheet Form matching the user's specified layout:
- * - Centered School Name & Exam Name at the top
- * - Student Name, Class Name, Roll Number directly below Exam Name
- * - Bordered Table Chart Marksheet (Subject | Full | Pass | Highest | Obtained | Grade/Status)
- * - Total row, GPA, Result, and Final Exam Merit Rank (when Final Exam)
+ * 3-Term Combined Marksheet Chart:
+ * - No Pass column
+ * - 3 individual columns per Term Examination: Continuous | Summative | Total Obtained (auto-summed)
+ * - 3-Term Average column at the end + Grade/Status
  */
 @Composable
 private fun MarksheetFormTableCard(
     student: StudentRecord,
     exam: ExamTermConfig,
+    examConfigs: List<ExamTermConfig>,
     summary: StudentExamResultSummary,
+    combinedTotals: CombinedThreeTermTotals,
     teacherProfile: TeacherProfile?
 ) {
     val strings = LocalAppStrings.current
     val borderColor = MaterialTheme.colorScheme.outlineVariant
+    val normalizedExams = remember(examConfigs) { ExamDefaults.ensureThreeExams(examConfigs) }
+
+    val subjectColW = 116.dp
+    val fullColW = 42.dp
+    val contColW = 44.dp
+    val sumColW = 44.dp
+    val termTotColW = 50.dp
+    val termGroupW = contColW + sumColW + termTotColW // 138.dp
+    val avgColW = 68.dp
+    val gradeColW = 72.dp
+
+    fun fmt(v: Double?): String = v?.let { ExamResultCalculator.formatMark(it) } ?: "—"
 
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -692,8 +787,8 @@ private fun MarksheetFormTableCard(
                     textAlign = TextAlign.Center
                 )
                 Text(
-                    text = strings.localizeExamTitle(exam),
-                    style = MaterialTheme.typography.titleLarge,
+                    text = "${strings.threeExamMarksheetTitle} (${strings.localizeExamTitle(exam)})",
+                    style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center
                 )
@@ -701,7 +796,7 @@ private fun MarksheetFormTableCard(
 
             HorizontalDivider()
 
-            // Directly below Exam Name: Student Name, Class, Roll
+            // Student Name, Class, Roll
             Surface(
                 color = MaterialTheme.colorScheme.surfaceContainerLow,
                 shape = RoundedCornerShape(10.dp)
@@ -739,19 +834,26 @@ private fun MarksheetFormTableCard(
                 }
             }
 
-            // Table Chart
+            Text(
+                text = strings.swipeTableHint,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+
+            // Horizontally Scrollable 2-Tier 3-Term Marksheet Table (No Pass Column)
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
                     .border(1.dp, borderColor, RoundedCornerShape(10.dp))
+                    .horizontalScroll(rememberScrollState())
             ) {
-                // Header Row
+                // Tier 1 Group Header
                 Row(
                     modifier = Modifier
-                        .fillMaxWidth()
+                        .height(IntrinsicSize.Min)
                         .background(MaterialTheme.colorScheme.primary)
-                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                        .padding(vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
@@ -759,107 +861,198 @@ private fun MarksheetFormTableCard(
                         color = MaterialTheme.colorScheme.onPrimary,
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(2.2f)
+                        modifier = Modifier
+                            .width(subjectColW)
+                            .padding(horizontal = 8.dp)
                     )
+                    VerticalDivider(color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.25f))
                     Text(
                         strings.resultSheetFullCol,
                         color = MaterialTheme.colorScheme.onPrimary,
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center,
-                        modifier = Modifier.weight(0.9f)
+                        modifier = Modifier.width(fullColW)
                     )
+                    normalizedExams.forEach { termExam ->
+                        VerticalDivider(color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.35f))
+                        Text(
+                            text = strings.localizeExamTitle(termExam),
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .width(termGroupW)
+                                .padding(horizontal = 4.dp)
+                        )
+                    }
+                    VerticalDivider(color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.35f))
                     Text(
-                        strings.resultSheetPassCol,
+                        strings.threeTermAverageCol,
                         color = MaterialTheme.colorScheme.onPrimary,
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center,
-                        modifier = Modifier.weight(0.9f)
+                        modifier = Modifier
+                            .width(avgColW)
+                            .padding(horizontal = 4.dp)
                     )
-                    Text(
-                        strings.resultSheetHighestCol,
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.weight(1.0f)
-                    )
-                    Text(
-                        strings.resultSheetObtainedCol,
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.weight(1.1f)
-                    )
+                    VerticalDivider(color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.25f))
                     Text(
                         strings.resultSheetGradeCol,
                         color = MaterialTheme.colorScheme.onPrimary,
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.End,
-                        modifier = Modifier.weight(1.4f)
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .width(gradeColW)
+                            .padding(horizontal = 4.dp)
                     )
                 }
 
-                // Data Rows
-                summary.subjectEvaluations.forEachIndexed { idx, ev ->
+                // Tier 2 Sub-Header (Cont. | Sum. | Total per Term)
+                Row(
+                    modifier = Modifier
+                        .height(IntrinsicSize.Min)
+                        .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f))
+                        .padding(vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Spacer(Modifier.width(subjectColW))
+                    VerticalDivider(color = borderColor)
+                    Spacer(Modifier.width(fullColW))
+                    repeat(3) {
+                        VerticalDivider(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f))
+                        Text(
+                            strings.continuousShortCol,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            modifier = Modifier.width(contColW)
+                        )
+                        VerticalDivider(color = borderColor.copy(alpha = 0.6f))
+                        Text(
+                            strings.summativeShortCol,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            modifier = Modifier.width(sumColW)
+                        )
+                        VerticalDivider(color = borderColor.copy(alpha = 0.6f))
+                        Text(
+                            strings.totalShortCol,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            modifier = Modifier.width(termTotColW)
+                        )
+                    }
+                    VerticalDivider(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f))
+                    Text(
+                        strings.threeTermAverageCol,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                        modifier = Modifier.width(avgColW)
+                    )
+                    VerticalDivider(color = borderColor)
+                    Text(
+                        strings.resultSheetOverallResult,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                        modifier = Modifier.width(gradeColW)
+                    )
+                }
+
+                HorizontalDivider(color = borderColor)
+
+                // Subject Rows across all 3 Terms
+                combinedTotals.subjectRows.forEachIndexed { idx, row ->
                     val bg = if (idx % 2 == 1) MaterialTheme.colorScheme.surfaceContainerLow
                     else MaterialTheme.colorScheme.surface
                     Row(
                         modifier = Modifier
-                            .fillMaxWidth()
+                            .height(IntrinsicSize.Min)
                             .background(bg)
-                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                            .padding(vertical = 7.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            ev.spec.subjectName,
+                            row.subjectName,
                             style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.Medium,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(2.2f)
+                            modifier = Modifier
+                                .width(subjectColW)
+                                .padding(horizontal = 8.dp)
                         )
+                        VerticalDivider(color = borderColor.copy(alpha = 0.6f))
                         Text(
-                            ev.spec.fullMarks.toString(),
+                            row.fullMarks.toString(),
                             fontFamily = JetBrainsMonoFontFamily,
                             style = MaterialTheme.typography.labelSmall,
                             textAlign = TextAlign.Center,
-                            modifier = Modifier.weight(0.9f)
+                            modifier = Modifier.width(fullColW)
                         )
+                        listOf(row.term1, row.term2, row.term3).forEach { term ->
+                            VerticalDivider(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+                            Text(
+                                fmt(term.continuous),
+                                fontFamily = JetBrainsMonoFontFamily,
+                                style = MaterialTheme.typography.labelSmall,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.width(contColW)
+                            )
+                            VerticalDivider(color = borderColor.copy(alpha = 0.45f))
+                            Text(
+                                fmt(term.summative),
+                                fontFamily = JetBrainsMonoFontFamily,
+                                style = MaterialTheme.typography.labelSmall,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.width(sumColW)
+                            )
+                            VerticalDivider(color = borderColor.copy(alpha = 0.45f))
+                            Text(
+                                fmt(term.total),
+                                fontFamily = JetBrainsMonoFontFamily,
+                                fontWeight = FontWeight.Bold,
+                                color = if (term.total != null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.width(termTotColW)
+                            )
+                        }
+                        VerticalDivider(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
                         Text(
-                            ev.effectivePassMarks.toString(),
-                            fontFamily = JetBrainsMonoFontFamily,
-                            style = MaterialTheme.typography.labelSmall,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.weight(0.9f)
-                        )
-                        Text(
-                            if (ev.highestInClass > 0.0) ExamResultCalculator.formatMark(ev.highestInClass) else "—",
-                            fontFamily = JetBrainsMonoFontFamily,
-                            style = MaterialTheme.typography.labelSmall,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.weight(1.0f)
-                        )
-                        Text(
-                            ev.obtained?.let { ExamResultCalculator.formatMark(it) } ?: "—",
+                            fmt(row.threeTermAverage),
                             fontFamily = JetBrainsMonoFontFamily,
                             fontWeight = FontWeight.Bold,
+                            color = if (row.threeTermAverage != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                             style = MaterialTheme.typography.bodySmall,
                             textAlign = TextAlign.Center,
-                            modifier = Modifier.weight(1.1f)
+                            modifier = Modifier.width(avgColW)
                         )
+                        VerticalDivider(color = borderColor.copy(alpha = 0.6f))
                         val stColor = when {
-                            !ev.hasScore -> MaterialTheme.colorScheme.onSurfaceVariant
-                            ev.isPassed -> MaterialTheme.colorScheme.primary
+                            !row.activeTermHasScore -> MaterialTheme.colorScheme.onSurfaceVariant
+                            row.activeTermPassed -> MaterialTheme.colorScheme.primary
                             else -> MaterialTheme.colorScheme.error
                         }
                         val stText = when {
-                            !ev.hasScore -> "—"
-                            ev.isPassed -> "${ev.letterGrade} (${strings.resultPass})"
-                            else -> "${ev.letterGrade} (${strings.resultFail})"
+                            !row.activeTermHasScore -> "—"
+                            row.activeTermPassed -> "${row.activeTermGrade} (${strings.resultPass})"
+                            else -> "${row.activeTermGrade} (${strings.resultFail})"
                         }
                         Text(
                             stText,
@@ -867,55 +1060,86 @@ private fun MarksheetFormTableCard(
                             fontWeight = FontWeight.Bold,
                             style = MaterialTheme.typography.labelSmall,
                             color = stColor,
-                            textAlign = TextAlign.End,
-                            modifier = Modifier.weight(1.4f)
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .width(gradeColW)
+                                .padding(horizontal = 4.dp)
                         )
                     }
                     HorizontalDivider(color = borderColor.copy(alpha = 0.5f))
                 }
 
-                // Total Summary Row
+                // Bottom Auto-Calculated Total Summary Row
                 Row(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f))
-                        .padding(horizontal = 8.dp, vertical = 9.dp),
+                        .height(IntrinsicSize.Min)
+                        .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f))
+                        .padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         strings.resultSheetTotalRow,
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(2.2f)
+                        modifier = Modifier
+                            .width(subjectColW)
+                            .padding(horizontal = 8.dp)
                     )
+                    VerticalDivider(color = borderColor)
                     Text(
-                        summary.configuredFullMarks.toString(),
+                        combinedTotals.configuredFullMarks.toString(),
                         fontFamily = JetBrainsMonoFontFamily,
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.labelSmall,
                         textAlign = TextAlign.Center,
-                        modifier = Modifier.weight(0.9f)
+                        modifier = Modifier.width(fullColW)
                     )
-                    Text(
-                        "—",
-                        style = MaterialTheme.typography.labelSmall,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.weight(0.9f)
+                    val termTotalsList = listOf(
+                        Triple(combinedTotals.t1ContTotal, combinedTotals.t1SumTotal, combinedTotals.t1Total to combinedTotals.t1HasScore),
+                        Triple(combinedTotals.t2ContTotal, combinedTotals.t2SumTotal, combinedTotals.t2Total to combinedTotals.t2HasScore),
+                        Triple(combinedTotals.t3ContTotal, combinedTotals.t3SumTotal, combinedTotals.t3Total to combinedTotals.t3HasScore)
                     )
+                    termTotalsList.forEach { (cSum, sSum, totPair) ->
+                        val (tVal, tHas) = totPair
+                        VerticalDivider(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+                        Text(
+                            if (tHas && cSum > 0.0) ExamResultCalculator.formatMark(cSum) else "—",
+                            fontFamily = JetBrainsMonoFontFamily,
+                            fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.labelSmall,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.width(contColW)
+                        )
+                        VerticalDivider(color = borderColor.copy(alpha = 0.5f))
+                        Text(
+                            if (tHas && sSum > 0.0) ExamResultCalculator.formatMark(sSum) else "—",
+                            fontFamily = JetBrainsMonoFontFamily,
+                            fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.labelSmall,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.width(sumColW)
+                        )
+                        VerticalDivider(color = borderColor.copy(alpha = 0.5f))
+                        Text(
+                            if (tHas) ExamResultCalculator.formatMark(tVal) else "—",
+                            fontFamily = JetBrainsMonoFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.labelMedium,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.width(termTotColW)
+                        )
+                    }
+                    VerticalDivider(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
                     Text(
-                        "—",
-                        style = MaterialTheme.typography.labelSmall,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.weight(1.0f)
-                    )
-                    Text(
-                        if (summary.scoredCount > 0) ExamResultCalculator.formatMark(summary.totalObtained) else "—",
+                        fmt(combinedTotals.threeTermAvgTotal),
                         fontFamily = JetBrainsMonoFontFamily,
                         fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
                         style = MaterialTheme.typography.labelMedium,
                         textAlign = TextAlign.Center,
-                        modifier = Modifier.weight(1.1f)
+                        modifier = Modifier.width(avgColW)
                     )
+                    VerticalDivider(color = borderColor)
                     val totalResultText = when (summary.outcome) {
                         ExamPassOutcome.PASS -> "${strings.resultPass} (${ExamResultCalculator.formatGpa(summary.gpa)})"
                         ExamPassOutcome.FAIL -> strings.resultFail
@@ -928,8 +1152,10 @@ private fun MarksheetFormTableCard(
                         style = MaterialTheme.typography.labelSmall,
                         color = if (summary.outcome == ExamPassOutcome.FAIL) MaterialTheme.colorScheme.error
                         else MaterialTheme.colorScheme.primary,
-                        textAlign = TextAlign.End,
-                        modifier = Modifier.weight(1.4f)
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .width(gradeColW)
+                            .padding(horizontal = 4.dp)
                     )
                 }
             }

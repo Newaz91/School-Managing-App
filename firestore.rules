@@ -40,6 +40,10 @@ service cloud.firestore {
              (!('teachers' in d) || (d.teachers is list && d.teachers.size() <= 60)) &&
              (!('examConfigs' in d) || (d.examConfigs is list && d.examConfigs.size() <= 5)) &&
              (!('recentMessages' in d) || (d.recentMessages is list && d.recentMessages.size() <= 30)) &&
+             (!('latestAppVersionCode' in d) || (d.latestAppVersionCode is int && d.latestAppVersionCode >= 0 && d.latestAppVersionCode <= 999999)) &&
+             (!('latestAppVersionName' in d) || (d.latestAppVersionName is string && d.latestAppVersionName.size() <= 20)) &&
+             (!('appUpdateUrl' in d) || (d.appUpdateUrl is string && d.appUpdateUrl.size() <= 500)) &&
+             (!('appUpdateNotes' in d) || (d.appUpdateNotes is string && d.appUpdateNotes.size() <= 300)) &&
              d.createdAt is timestamp && d.createdAt <= request.time &&
              d.updatedAt is timestamp && d.updatedAt <= request.time;
     }
@@ -66,7 +70,7 @@ service cloud.firestore {
              (!('promotionStatus' in d) || (d.promotionStatus is string && d.promotionStatus.size() <= 40)) &&
              (!('customValues' in d) || (d.customValues is map && d.customValues.size() <= 100)) &&
              (!('subjectValues' in d) || (d.subjectValues is map && d.subjectValues.size() <= 150)) &&
-             (!('examResults' in d) || (d.examResults is map && d.examResults.size() <= 150)) &&
+             (!('examResults' in d) || (d.examResults is map && d.examResults.size() <= 350)) &&
              (!('sectorNotes' in d) || (d.sectorNotes is map && d.sectorNotes.size() <= 150)) &&
              (!('lastUpdatedByName' in d) || (d.lastUpdatedByName is string && d.lastUpdatedByName.size() <= 100)) &&
              d.createdAt is timestamp && d.createdAt <= request.time &&
@@ -161,6 +165,7 @@ service cloud.firestore {
                          'defaultAcademicYear', 'lastAutoRolloverYear', 'teachersPanelVersion',
                          'adminDeviceId', 'adminName',
                          'teachers', 'examConfigs', 'recentMessages',
+                         'latestAppVersionCode', 'latestAppVersionName', 'appUpdateUrl', 'appUpdateNotes',
                          'createdAt', 'updatedAt'
                        ]) &&
                        isValidSchoolWorkspace(request.resource.data, schoolId);
@@ -173,7 +178,8 @@ service cloud.firestore {
                          'schoolName', 'emisCode', 'upazilaDistrict', 'defaultAcademicYear',
                          'lastAutoRolloverYear', 'teachersPanelVersion',
                          'adminDeviceId', 'adminName', 'teachers', 'examConfigs',
-                         'recentMessages', 'updatedAt'
+                         'recentMessages', 'latestAppVersionCode', 'latestAppVersionName',
+                         'appUpdateUrl', 'appUpdateNotes', 'updatedAt'
                        ]);
 
       allow delete: if false;

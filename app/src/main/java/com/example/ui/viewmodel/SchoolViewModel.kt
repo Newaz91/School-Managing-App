@@ -24,6 +24,7 @@ import com.example.data.model.SubjectFieldDef
 import com.example.data.model.TeacherProfile
 import com.example.data.model.generateShortId
 import com.example.data.model.normalizeSchoolId
+import com.example.util.NetworkMonitor
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -35,6 +36,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -64,7 +66,8 @@ class SchoolViewModel(
     val deviceId: String,
     val teacherName: String,
     val teacherPhone: String = "",
-    initialYear: Int = 2026
+    initialYear: Int = 2026,
+    appContext: Context? = null
 ) : ViewModel() {
 
     private val _selectedYear = MutableStateFlow(initialYear)
@@ -84,6 +87,25 @@ class SchoolViewModel(
 
     private val _feedbackMessage = MutableStateFlow<String?>(null)
     val feedbackMessage: StateFlow<String?> = _feedbackMessage.asStateFlow()
+
+    val isOnlineState: StateFlow<Boolean> = if (appContext != null) {
+        NetworkMonitor.observeIsOnline(appContext.applicationContext)
+            .stateIn(
+                scope = viewModelScope,
+                started = SharingStarted.Eagerly,
+                initialValue = NetworkMonitor.isCurrentlyOnline(appContext.applicationContext)
+            )
+    } else {
+        flowOf(true).stateIn(viewModelScope, SharingStarted.Eagerly, true)
+    }
+
+    val hasPendingSyncState: StateFlow<Boolean> = repository.observeHasPendingSync(schoolId)
+        .catch { emit(false) }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = false
+        )
 
     private fun <T> Flow<T>.toUiStateFlow(
         tagMsg: String,
@@ -968,6 +990,49 @@ class SchoolViewModel(
                 _feedbackMessage.value = "Parent notice deleted"
             }.onFailure { err ->
                 _feedbackMessage.value = err.message ?: "Could not delete notice."
+            }
+        }
+    }
+
+    fun syncPendingWritesAndCheckUpdates(
+        onComplete: (SchoolWorkspace?) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            _isSaving.value = true
+            val result = repository.syncPendingWritesAndCheckUpdates(schoolId)
+            _isSaving.value = false
+            result.onSuccess { ws ->
+                onComplete(ws)
+            }.onFailure { err ->
+                _feedbackMessage.value = err.message ?: "Could not sync right now — edits remain saved locally."
+                onComplete(null)
+            }
+        }
+    }
+
+    fun saveAppUpdateMetadata(
+        latestVersionCode: Long,
+        latestVersionName: String,
+        updateUrl: String,
+        releaseNotes: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        if (!isAdminState.value) return
+        viewModelScope.launch {
+            _isSaving.value = true
+            val result = repository.saveAppUpdateMetadata(
+                schoolId = schoolId,
+                latestVersionCode = latestVersionCode,
+                latestVersionName = latestVersionName,
+                updateUrl = updateUrl,
+                releaseNotes = releaseNotes
+            )
+            _isSaving.value = false
+            result.onSuccess {
+                _feedbackMessage.value = "App update link & version saved for all teachers"
+                onSuccess()
+            }.onFailure { err ->
+                _feedbackMessage.value = err.message ?: "Could not save app update info."
             }
         }
     }

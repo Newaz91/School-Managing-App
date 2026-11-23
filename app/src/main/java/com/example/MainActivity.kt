@@ -1,6 +1,7 @@
 package com.example
 
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
@@ -9,15 +10,19 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.outlined.Dashboard
@@ -29,6 +34,9 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AdminPanelSettings
 import androidx.compose.material.icons.rounded.Approval
 import androidx.compose.material.icons.rounded.Backup
+import androidx.compose.material.icons.rounded.CloudDone
+import androidx.compose.material.icons.rounded.CloudOff
+import androidx.compose.material.icons.rounded.CloudSync
 import androidx.compose.material.icons.rounded.Dashboard
 import androidx.compose.material.icons.rounded.EventAvailable
 import androidx.compose.material.icons.rounded.Forum
@@ -41,10 +49,13 @@ import androidx.compose.material.icons.rounded.School
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.SwapVert
+import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -62,6 +73,7 @@ import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -74,7 +86,9 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -120,7 +134,9 @@ import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.ShikkhaKhataTheme
 import com.example.ui.viewmodel.SchoolViewModel
 import com.example.ui.viewmodel.UiState
+import com.example.util.NetworkMonitor
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.firestoreSettings
 import com.google.firebase.firestore.persistentCacheSettings
 import kotlinx.coroutines.launch
@@ -168,7 +184,11 @@ private fun provideFirestore(context: Context): FirebaseFirestore {
     val db = FirebaseFirestore.getInstance(databaseId)
     try {
         db.firestoreSettings = firestoreSettings {
-            setLocalCacheSettings(persistentCacheSettings {})
+            setLocalCacheSettings(
+                persistentCacheSettings {
+                    setSizeBytes(FirebaseFirestoreSettings.CACHE_SIZE_UNLIMITED)
+                }
+            )
         }
     } catch (_: Exception) {
         // Firestore settings already initialized in this process
@@ -192,7 +212,12 @@ class MainActivity : ComponentActivity() {
 fun AppNavigation() {
     val context = LocalContext.current
     val db = remember(context) { provideFirestore(context) }
-    val repository = remember(db) { SchoolRepository(db) }
+    val repository = remember(db, context) {
+        SchoolRepository(
+            db = db,
+            isOnlineProvider = { NetworkMonitor.isCurrentlyOnline(context.applicationContext) }
+        )
+    }
     var session by remember {
         mutableStateOf(AppPreferences.loadSession(context, BuildConfig.VERSION_CODE))
     }
@@ -268,12 +293,16 @@ fun SharedSchoolApp(
         factory = viewModelFactory {
             initializer {
                 SchoolViewModel(
-                    repository = SchoolRepository(db),
+                    repository = SchoolRepository(
+                        db = db,
+                        isOnlineProvider = { NetworkMonitor.isCurrentlyOnline(context.applicationContext) }
+                    ),
                     schoolId = schoolId,
                     deviceId = deviceId,
                     teacherName = teacherName,
                     teacherPhone = teacherPhone,
-                    initialYear = initialYear
+                    initialYear = initialYear,
+                    appContext = context.applicationContext
                 )
             }
         }
@@ -296,17 +325,20 @@ fun SharedSchoolApp(
     val quickFilter by viewModel.quickFilter.collectAsStateWithLifecycle()
     val isSaving by viewModel.isSaving.collectAsStateWithLifecycle()
     val feedbackMessage by viewModel.feedbackMessage.collectAsStateWithLifecycle()
+    val isOnline by viewModel.isOnlineState.collectAsStateWithLifecycle()
+    val hasPendingSync by viewModel.hasPendingSyncState.collectAsStateWithLifecycle()
 
-    var activeTab by remember { mutableStateOf(MainTab.DASHBOARD) }
-    var activeSchoolSubTab by remember { mutableStateOf(SchoolSubTab.APPROVALS) }
-    var openRegisterInBatch by remember { mutableStateOf(false) }
-    var batchTargetClass by remember { mutableStateOf<String?>(null) }
-    var batchTargetSubjectId by remember { mutableStateOf<String?>(null) }
-    var batchInitialModeEnum by remember { mutableStateOf<BatchMode?>(null) }
-    var showFieldManager by remember { mutableStateOf(false) }
-    var showPromotionManager by remember { mutableStateOf(false) }
+    var activeTab by rememberSaveable { mutableStateOf(MainTab.DASHBOARD) }
+    var activeSchoolSubTab by rememberSaveable { mutableStateOf(SchoolSubTab.APPROVALS) }
+    var openRegisterInBatch by rememberSaveable { mutableStateOf(false) }
+    var batchTargetClass by rememberSaveable { mutableStateOf<String?>(null) }
+    var batchTargetSubjectId by rememberSaveable { mutableStateOf<String?>(null) }
+    var batchInitialModeEnum by rememberSaveable { mutableStateOf<BatchMode?>(null) }
+    var showFieldManager by rememberSaveable { mutableStateOf(false) }
+    var showPromotionManager by rememberSaveable { mutableStateOf(false) }
     var showTopMenu by remember { mutableStateOf(false) }
-    var showShareAppDialog by remember { mutableStateOf(false) }
+    var showShareAppDialog by rememberSaveable { mutableStateOf(false) }
+    var showAppUpdateDialog by rememberSaveable { mutableStateOf(false) }
     var viewingProfileStudent by remember { mutableStateOf<StudentRecord?>(null) }
     var editingStudent by remember { mutableStateOf<StudentRecord?>(null) }
     var activeExportRequest by remember { mutableStateOf<ExportRequest?>(null) }
@@ -317,6 +349,8 @@ fun SharedSchoolApp(
     val snackbarHostState = remember { SnackbarHostState() }
 
     val workspace = (workspaceState as? UiState.Success)?.data
+    val hasRemoteUpdate = (workspace?.latestAppVersionCode ?: 0L) > BuildConfig.VERSION_CODE.toLong() &&
+        !workspace?.appUpdateUrl.isNullOrBlank()
     val teacherProfileView = remember(workspace, teacherName) {
         workspace?.toTeacherProfileView(teacherName)
     }
@@ -326,6 +360,12 @@ fun SharedSchoolApp(
     val attendanceLogs = (attendanceLogsState as? UiState.Success)?.data ?: emptyList()
     val examConfigs = remember(workspace?.examConfigs) {
         ExamDefaults.ensureThreeExams(workspace?.examConfigs.orEmpty())
+    }
+
+    LaunchedEffect(isOnline) {
+        if (isOnline && hasPendingSync) {
+            viewModel.syncPendingWritesAndCheckUpdates {}
+        }
     }
 
     LaunchedEffect(upgradedNotice) {
@@ -678,6 +718,24 @@ fun SharedSchoolApp(
                                 )
                             }
                             IconButton(
+                                onClick = { showAppUpdateDialog = true },
+                                modifier = Modifier.testTag("topbar_update_app_button")
+                            ) {
+                                BadgedBox(
+                                    badge = {
+                                        if (hasRemoteUpdate) {
+                                            Badge { Text("!") }
+                                        }
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.SystemUpdate,
+                                        contentDescription = strings.updateAppButton,
+                                        tint = if (hasRemoteUpdate) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                            IconButton(
                                 onClick = { showShareAppDialog = true },
                                 modifier = Modifier.testTag("topbar_share_app_button")
                             ) {
@@ -701,6 +759,19 @@ fun SharedSchoolApp(
                                     expanded = showTopMenu,
                                     onDismissRequest = { showTopMenu = false }
                                 ) {
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                if (hasRemoteUpdate) "${strings.updateAppButton} (${strings.updateAvailableBadge})"
+                                                else strings.updateAppButton
+                                            )
+                                        },
+                                        leadingIcon = { Icon(Icons.Rounded.SystemUpdate, contentDescription = null) },
+                                        onClick = {
+                                            showTopMenu = false
+                                            showAppUpdateDialog = true
+                                        }
+                                    )
                                     DropdownMenuItem(
                                         text = { Text(strings.menuAttendanceSheet) },
                                         leadingIcon = { Icon(Icons.Rounded.EventAvailable, contentDescription = null) },
@@ -836,11 +907,62 @@ fun SharedSchoolApp(
                     }
                 }
             ) { innerPadding ->
-                Row(
+                Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(innerPadding)
                 ) {
+                    if (!isOnline || hasPendingSync) {
+                        Surface(
+                            color = if (!isOnline) {
+                                MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f)
+                            } else {
+                                MaterialTheme.colorScheme.secondaryContainer
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("offline_sync_status_banner")
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (!isOnline) Icons.Rounded.CloudOff else Icons.Rounded.CloudSync,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = if (!isOnline) strings.offlineBannerText else strings.pendingSyncBannerText,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                if (isOnline && hasPendingSync) {
+                                    TextButton(
+                                        onClick = {
+                                            viewModel.syncPendingWritesAndCheckUpdates {
+                                                scope.launch {
+                                                    snackbarHostState.showSnackbar(strings.syncedStatusText)
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.testTag("banner_sync_now_button")
+                                    ) {
+                                        Text(strings.syncNowButton, style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                    ) {
                     if (useRail) {
                         NavigationRail(
                             windowInsets = WindowInsets(0, 0, 0, 0)
@@ -1078,7 +1200,18 @@ fun SharedSchoolApp(
                                     subjects = subjects,
                                     customFieldsCount = customFields.size,
                                     isSaving = isSaving,
+                                    isOnline = isOnline,
+                                    hasPendingSync = hasPendingSync,
                                     onSelectLanguage = onSelectLanguage,
+                                    onSyncNow = {
+                                        viewModel.syncPendingWritesAndCheckUpdates {
+                                            scope.launch {
+                                                snackbarHostState.showSnackbar(strings.syncedStatusText)
+                                            }
+                                        }
+                                    },
+                                    onOpenUpdateDialog = { showAppUpdateDialog = true },
+                                    onSaveAppUpdateMetadata = viewModel::saveAppUpdateMetadata,
                                     onUpdateSchoolDetails = viewModel::updateSchoolDetails,
                                     onSaveExamConfigs = viewModel::saveExamConfigs,
                                     onTransferAdmin = viewModel::transferAdminRole,
@@ -1104,6 +1237,7 @@ fun SharedSchoolApp(
                             }
                         }
                     }
+                }
                 }
             }
         }
@@ -1176,6 +1310,172 @@ fun SharedSchoolApp(
             },
             onShareApk = {
                 AppShareHelper.shareAppApk(context)
+            }
+        )
+    }
+
+    if (showAppUpdateDialog) {
+        val remoteCode = workspace?.latestAppVersionCode ?: 0L
+        val remoteName = workspace?.latestAppVersionName.orEmpty()
+        val updateUrl = workspace?.appUpdateUrl?.trim().orEmpty()
+        val releaseNotes = workspace?.appUpdateNotes?.trim().orEmpty()
+        val hasValidRemoteUrl = updateUrl.startsWith("https://", ignoreCase = true) ||
+            updateUrl.startsWith("http://", ignoreCase = true) ||
+            updateUrl.startsWith("market://", ignoreCase = true)
+        val hasNewerRelease = remoteCode > BuildConfig.VERSION_CODE.toLong() && hasValidRemoteUrl
+
+        AlertDialog(
+            onDismissRequest = { showAppUpdateDialog = false },
+            icon = { Icon(Icons.Rounded.SystemUpdate, contentDescription = null) },
+            title = { Text(strings.updateCheckTitle) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = "Installed Version: v${BuildConfig.VERSION_NAME} (#${BuildConfig.VERSION_CODE})",
+                                fontFamily = JetBrainsMonoFontFamily,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = when {
+                                        !isOnline -> Icons.Rounded.CloudOff
+                                        hasPendingSync -> Icons.Rounded.CloudSync
+                                        else -> Icons.Rounded.CloudDone
+                                    },
+                                    contentDescription = null,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Text(
+                                    text = when {
+                                        !isOnline -> strings.offlineBannerText
+                                        hasPendingSync -> strings.pendingSyncBannerText
+                                        else -> strings.syncedStatusText
+                                    },
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                        }
+                    }
+
+                    if (hasNewerRelease) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = "${strings.updateAvailableBadge}: v${remoteName.ifBlank { remoteCode.toString() }}",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                if (releaseNotes.isNotBlank()) {
+                                    Text(
+                                        text = releaseNotes,
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                            }
+                        }
+                    } else if (hasValidRemoteUrl) {
+                        Text(
+                            text = "App is up to date (Server release: v${remoteName.ifBlank { BuildConfig.VERSION_NAME }}). You can still open the release link below if needed.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Text(
+                            text = if (isAdmin) {
+                                "No school release link is configured yet. Open Settings → App Updates & Cloud Sync → Configure School App Update Link to publish your Google Drive / Play Store update link for all teachers."
+                            } else {
+                                "You are running v${BuildConfig.VERSION_NAME}. When your School Admin publishes a new release link, tapping '${strings.updateNowAction}' will open the update directly."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    if (hasValidRemoteUrl) {
+                        Button(
+                            onClick = {
+                                try {
+                                    context.startActivity(
+                                        Intent(Intent.ACTION_VIEW, Uri.parse(updateUrl))
+                                    )
+                                    showAppUpdateDialog = false
+                                } catch (_: Exception) {
+                                    Toast.makeText(
+                                        context,
+                                        "Could not open update link in browser.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("dialog_open_update_url_button")
+                        ) {
+                            Icon(Icons.Rounded.SystemUpdate, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(strings.updateNowAction)
+                        }
+                    } else if (isAdmin) {
+                        Button(
+                            onClick = {
+                                showAppUpdateDialog = false
+                                activeSchoolSubTab = SchoolSubTab.SETTINGS
+                                activeTab = MainTab.SCHOOL
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Configure Release Link in Settings")
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.syncPendingWritesAndCheckUpdates { refreshed ->
+                            val msg = if (refreshed != null &&
+                                refreshed.latestAppVersionCode > BuildConfig.VERSION_CODE.toLong() &&
+                                refreshed.appUpdateUrl.isNotBlank()
+                            ) {
+                                "${strings.updateAvailableBadge}: v${refreshed.latestAppVersionName}"
+                            } else {
+                                strings.syncedStatusText
+                            }
+                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    enabled = !isSaving
+                ) {
+                    Icon(Icons.Rounded.Sync, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(strings.syncNowButton)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAppUpdateDialog = false }) {
+                    Text(strings.cancelButton)
+                }
             }
         )
     }

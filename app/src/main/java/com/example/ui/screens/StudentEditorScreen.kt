@@ -50,6 +50,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -91,9 +92,9 @@ fun StudentEditorScreen(
     BackHandler(onBack = onBack)
 
     var draft by remember(initialStudent.id) { mutableStateOf(initialStudent) }
-    var activeTab by remember { mutableStateOf(EditorSectionTab.FIXED) }
-    var expandAllDetails by remember { mutableStateOf(false) }
-    var showRadarPreview by remember { mutableStateOf(false) }
+    var activeTab by rememberSaveable { mutableStateOf(EditorSectionTab.FIXED) }
+    var expandAllDetails by rememberSaveable { mutableStateOf(false) }
+    var showRadarPreview by rememberSaveable { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var validationError by remember { mutableStateOf<String?>(null) }
 

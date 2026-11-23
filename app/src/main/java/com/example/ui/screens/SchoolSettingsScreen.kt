@@ -18,6 +18,9 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.AdminPanelSettings
+import androidx.compose.material.icons.rounded.CloudDone
+import androidx.compose.material.icons.rounded.CloudOff
+import androidx.compose.material.icons.rounded.CloudSync
 import androidx.compose.material.icons.rounded.CloudUpload
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Download
@@ -29,6 +32,8 @@ import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.SwapVert
+import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Upgrade
@@ -66,6 +71,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.example.BuildConfig
 import com.example.data.model.ExamDefaults
 import com.example.data.model.ExamTermConfig
 import com.example.data.model.SchoolWorkspace
@@ -90,7 +96,18 @@ fun SchoolSettingsScreen(
     subjects: List<SubjectDefinition>,
     customFieldsCount: Int,
     isSaving: Boolean,
+    isOnline: Boolean = true,
+    hasPendingSync: Boolean = false,
     onSelectLanguage: (AppLanguage) -> Unit = {},
+    onSyncNow: () -> Unit = {},
+    onOpenUpdateDialog: () -> Unit = {},
+    onSaveAppUpdateMetadata: (
+        latestVersionCode: Long,
+        latestVersionName: String,
+        updateUrl: String,
+        releaseNotes: String,
+        onSuccess: () -> Unit
+    ) -> Unit = { _, _, _, _, done -> done() },
     onUpdateSchoolDetails: (schoolName: String, emisCode: String, upazilaDistrict: String, defaultAcademicYear: Long) -> Unit,
     onSaveExamConfigs: (List<ExamTermConfig>, () -> Unit) -> Unit,
     onTransferAdmin: (newAdminDeviceId: String, newAdminName: String) -> Unit,
@@ -117,6 +134,15 @@ fun SchoolSettingsScreen(
     var defaultYear by remember { mutableIntStateOf((workspace?.defaultAcademicYear ?: 2026L).toInt()) }
     var showPromoteDialog by remember { mutableStateOf(false) }
     var showExamSetupDialog by remember { mutableStateOf(false) }
+    var showPublishUpdateEditor by remember { mutableStateOf(false) }
+    var draftUpdateVerCode by remember {
+        mutableStateOf((workspace?.latestAppVersionCode?.takeIf { it > 0L } ?: BuildConfig.VERSION_CODE.toLong()).toString())
+    }
+    var draftUpdateVerName by remember {
+        mutableStateOf(workspace?.latestAppVersionName?.ifBlank { BuildConfig.VERSION_NAME } ?: BuildConfig.VERSION_NAME)
+    }
+    var draftUpdateUrl by remember { mutableStateOf(workspace?.appUpdateUrl ?: "") }
+    var draftUpdateNotes by remember { mutableStateOf(workspace?.appUpdateNotes ?: "") }
 
     // Safe Admin Transfer confirmation state
     var pendingAdminTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
@@ -130,6 +156,18 @@ fun SchoolSettingsScreen(
             emisCode = workspace.emisCode
             upazilaDistrict = workspace.upazilaDistrict
             defaultYear = workspace.defaultAcademicYear.toInt()
+            if (workspace.latestAppVersionCode > 0L) {
+                draftUpdateVerCode = workspace.latestAppVersionCode.toString()
+            }
+            if (workspace.latestAppVersionName.isNotBlank()) {
+                draftUpdateVerName = workspace.latestAppVersionName
+            }
+            if (workspace.appUpdateUrl.isNotBlank()) {
+                draftUpdateUrl = workspace.appUpdateUrl
+            }
+            if (workspace.appUpdateNotes.isNotBlank()) {
+                draftUpdateNotes = workspace.appUpdateNotes
+            }
         }
     }
 
@@ -189,6 +227,207 @@ fun SchoolSettingsScreen(
                                     modifier = Modifier.testTag("settings_lang_${lang.code}")
                                 ) {
                                     Text(lang.displayLabel)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 0b. App Updates & Offline/Cloud Sync Card
+            item {
+                val remoteCode = workspace?.latestAppVersionCode ?: 0L
+                val remoteName = workspace?.latestAppVersionName.orEmpty()
+                val hasUpdateAvailable = remoteCode > BuildConfig.VERSION_CODE.toLong() &&
+                    !workspace?.appUpdateUrl.isNullOrBlank()
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (hasUpdateAvailable) {
+                            MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.55f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerLow
+                        }
+                    ),
+                    shape = RoundedCornerShape(20.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.SystemUpdate,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = strings.updateCheckTitle,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Surface(
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    text = "v${BuildConfig.VERSION_NAME}",
+                                    fontFamily = JetBrainsMonoFontFamily,
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+
+                        Surface(
+                            color = when {
+                                !isOnline -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f)
+                                hasPendingSync -> MaterialTheme.colorScheme.secondaryContainer
+                                else -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = when {
+                                        !isOnline -> Icons.Rounded.CloudOff
+                                        hasPendingSync -> Icons.Rounded.CloudSync
+                                        else -> Icons.Rounded.CloudDone
+                                    },
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    text = when {
+                                        !isOnline -> strings.offlineBannerText
+                                        hasPendingSync -> strings.pendingSyncBannerText
+                                        else -> strings.syncedStatusText
+                                    },
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                            }
+                        }
+
+                        if (hasUpdateAvailable) {
+                            Text(
+                                text = "${strings.updateAvailableBadge}: v${remoteName.ifBlank { remoteCode.toString() }}",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilledTonalButton(
+                                onClick = onSyncNow,
+                                enabled = !isSaving,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("settings_sync_now_button")
+                            ) {
+                                Icon(Icons.Rounded.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(strings.syncNowButton, maxLines = 1)
+                            }
+                            Button(
+                                onClick = onOpenUpdateDialog,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("settings_update_app_button")
+                            ) {
+                                Icon(Icons.Rounded.SystemUpdate, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(strings.updateAppButton, maxLines = 1)
+                            }
+                        }
+
+                        if (isAdmin) {
+                            TextButton(
+                                onClick = { showPublishUpdateEditor = !showPublishUpdateEditor },
+                                modifier = Modifier.testTag("settings_toggle_publish_update")
+                            ) {
+                                Text(
+                                    if (showPublishUpdateEditor) "Hide Admin App Release Link Settings"
+                                    else "Configure School App Update Link (Admin)"
+                                )
+                            }
+                            if (showPublishUpdateEditor) {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        OutlinedTextField(
+                                            value = draftUpdateVerCode,
+                                            onValueChange = { draftUpdateVerCode = it.filter { c -> c.isDigit() } },
+                                            label = { Text("Version Code") },
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                            singleLine = true,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        OutlinedTextField(
+                                            value = draftUpdateVerName,
+                                            onValueChange = { draftUpdateVerName = it },
+                                            label = { Text("Version Name") },
+                                            singleLine = true,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                    OutlinedTextField(
+                                        value = draftUpdateUrl,
+                                        onValueChange = { draftUpdateUrl = it },
+                                        label = { Text("App Update Link (https://...)") },
+                                        placeholder = { Text("https://drive.google.com/... or Play Store URL") },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                    OutlinedTextField(
+                                        value = draftUpdateNotes,
+                                        onValueChange = { draftUpdateNotes = it },
+                                        label = { Text("Release Notes (Optional)") },
+                                        maxLines = 2,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                    FilledTonalButton(
+                                        onClick = {
+                                            val code = (draftUpdateVerCode.toLongOrNull() ?: BuildConfig.VERSION_CODE.toLong())
+                                                .coerceIn(1L, 999999L)
+                                            onSaveAppUpdateMetadata(
+                                                code,
+                                                draftUpdateVerName,
+                                                draftUpdateUrl,
+                                                draftUpdateNotes
+                                            ) {
+                                                showPublishUpdateEditor = false
+                                            }
+                                        },
+                                        enabled = !isSaving && draftUpdateUrl.trim().startsWith("https://", ignoreCase = true),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(48.dp)
+                                            .testTag("settings_publish_update_button")
+                                    ) {
+                                        Icon(Icons.Rounded.Save, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("Save Release Link for Teachers")
+                                    }
                                 }
                             }
                         }
@@ -523,7 +762,7 @@ fun SchoolSettingsScreen(
                         ) {
                             Icon(Icons.Rounded.Grade, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text("Customize 3-Exam Marksheet & Pass Marks")
+                            Text("Customize 3-Exam Marksheet & Subjects")
                         }
                     }
                 }

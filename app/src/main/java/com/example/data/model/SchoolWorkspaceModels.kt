@@ -156,6 +156,10 @@ data class SchoolWorkspace(
     val teachers: List<SchoolTeacherMember> = emptyList(),
     val examConfigs: List<ExamTermConfig> = ExamDefaults.defaultThreeExams(),
     val recentMessages: List<RecentChatEntry> = emptyList(),
+    val latestAppVersionCode: Long = 0L,
+    val latestAppVersionName: String = "",
+    val appUpdateUrl: String = "",
+    val appUpdateNotes: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
@@ -211,6 +215,10 @@ data class SchoolWorkspace(
         "teachers" to teachers.take(60).map { it.toMap() },
         "examConfigs" to ExamDefaults.ensureThreeExams(examConfigs).map { it.toMap() },
         "recentMessages" to recentMessages.takeLast(30).map { it.toMap() },
+        "latestAppVersionCode" to latestAppVersionCode.coerceIn(0L, 999999L),
+        "latestAppVersionName" to latestAppVersionName.trim().take(20),
+        "appUpdateUrl" to appUpdateUrl.trim().take(500),
+        "appUpdateNotes" to appUpdateNotes.trim().take(300),
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp()
     )
